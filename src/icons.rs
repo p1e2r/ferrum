@@ -18,6 +18,8 @@ pub enum Icon {
     Star,
     StarFilled,
     Download,
+    Up,
+    Down,
 }
 
 /// A square icon button. Returns the click response.
@@ -115,6 +117,12 @@ fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
             p.line_segment([pos2(c.x, r.bottom() - h * 0.2), pos2(c.x - w * 0.32, c.y + h * 0.02)], s);
             p.line_segment([pos2(c.x, r.bottom() - h * 0.2), pos2(c.x + w * 0.32, c.y + h * 0.02)], s);
             p.line_segment([pos2(r.left(), r.bottom()), pos2(r.right(), r.bottom())], s);
+        },
+        Icon::Up | Icon::Down => {
+            let d = if matches!(icon, Icon::Up) { -1.0 } else { 1.0 };
+            let tip = pos2(c.x, c.y + d * h * 0.28);
+            p.line_segment([pos2(r.left() + w * 0.1, c.y - d * h * 0.22), tip], s);
+            p.line_segment([tip, pos2(r.right() - w * 0.1, c.y - d * h * 0.22)], s);
         },
         Icon::Home => {
             let roof = [

@@ -27,6 +27,8 @@ browser.rs   Browser: owns Servo, the window, tabs and all state
 ui.rs        Browser::draw(): builds the whole interface each frame with egui
 profile.rs   loads/saves settings, bookmarks, history and the session
 downloads.rs background download threads
+find.rs      find in page (highlighting script + state)
+print.rs     page capture → PDF → printer
 location.rs  turns address-bar text into a URL or a search
 keys.rs      winit key events → W3C key events for Servo
 icons.rs     vector-drawn toolbar icons

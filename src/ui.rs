@@ -19,21 +19,54 @@ use url::Url;
 use crate::browser::{APP_NAME, Browser, PageControl, SidePanel};
 use crate::downloads::{Status, human_size, open_path};
 use crate::icons::{Icon, icon_button};
-use crate::profile::{SearchEngine, ThemeChoice};
+use crate::profile::{DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, ThemeChoice};
 
-const ACCENT: Color32 = Color32::from_rgb(222, 98, 52);
+pub fn accent(settings: &Settings) -> Color32 {
+    let [r, g, b] = settings.accent;
+    Color32::from_rgb(r, g, b)
+}
 
-pub fn style(ctx: &egui::Context, theme: ThemeChoice) {
+/// A hash of every setting that affects the interface's look, so the style is
+/// only rebuilt when one of them changes.
+fn style_key(s: &Settings) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness).hash(&mut h);
+    h.finish().max(1)
+}
+
+/// Apply theme, accent colour, size, density and rounding to egui.
+pub fn style(ctx: &egui::Context, settings: &Settings) {
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;
         o.fallback_theme = egui::Theme::Light;
     });
-    set_theme(ctx, theme);
+    set_theme(ctx, settings.theme);
+    ctx.set_zoom_factor(settings.ui_scale.clamp(0.7, 1.6));
+    let accent = accent(settings);
+    let r = CornerRadius::same(settings.roundness);
+    let (pad, gap) = if settings.compact { (vec2(7.0, 3.0), 4.0) } else { (vec2(10.0, 5.0), 6.0) };
     ctx.all_styles_mut(|style| {
-        style.spacing.button_padding = vec2(10.0, 5.0);
-        style.spacing.item_spacing = vec2(6.0, 6.0);
-        style.visuals.selection.bg_fill = ACCENT;
-        style.visuals.hyperlink_color = ACCENT;
+        style.spacing.button_padding = pad;
+        style.spacing.item_spacing = vec2(gap, gap);
+        style.spacing.interact_size.y = if settings.compact { 20.0 } else { 24.0 };
+        style.visuals.selection.bg_fill = accent;
+        style.visuals.selection.stroke.color = Color32::WHITE;
+        style.visuals.hyperlink_color = accent;
+        style.visuals.text_edit_bg_color = None;
+        for w in [
+            &mut style.visuals.widgets.noninteractive,
+            &mut style.visuals.widgets.inactive,
+            &mut style.visuals.widgets.hovered,
+            &mut style.visuals.widgets.active,
+            &mut style.visuals.widgets.open,
+        ] {
+            w.corner_radius = r;
+        }
+        style.visuals.widgets.active.bg_stroke.color = accent;
+        style.visuals.widgets.hovered.bg_stroke.color = accent.gamma_multiply(0.6);
+        style.visuals.window_corner_radius = CornerRadius::same(settings.roundness.saturating_add(4));
+        style.visuals.menu_corner_radius = CornerRadius::same(settings.roundness.saturating_add(2));
         style.interaction.tooltip_delay = 0.4;
     });
 }
@@ -58,19 +91,13 @@ fn host_of(url: &Option<Url>) -> String {
     url.as_ref().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| "This page".into())
 }
 
-/// Letter tile used where a site has no favicon.
-fn letter_icon(ui: &mut Ui, text: &str, size: f32) {
+/// Letter tile used where a site has no favicon: the first letter of `label`,
+/// on a colour derived from `seed` (usually the URL) so each site keeps its colour.
+fn letter_icon(ui: &mut Ui, label: &str, seed: &str, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let letter = text
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_start_matches("www.")
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .unwrap_or('•')
-        .to_uppercase()
-        .to_string();
-    let hash = text.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    let label = label.trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("www.");
+    let letter = label.chars().find(|c| c.is_alphanumeric()).unwrap_or('•').to_uppercase().to_string();
+    let hash = seed.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
     let hue = (hash % 360) as f32 / 360.0;
     let fill: Color32 = egui::ecolor::Hsva::new(hue, 0.45, 0.75, 1.0).into();
     ui.painter().rect_filled(rect, size * 0.25, fill);
@@ -90,8 +117,18 @@ enum ControlOutcome {
 }
 
 impl Browser {
+    pub(crate) fn accent(&self) -> Color32 {
+        accent(&self.profile.settings)
+    }
+
     pub(crate) fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let key = style_key(&self.profile.settings);
+        if key != self.style_key {
+            self.style_key = key;
+            style(&ctx, &self.profile.settings);
+            ctx.request_repaint();
+        }
         self.ppp = ctx.pixels_per_point();
         self.apply_theme(&ctx);
         for i in 0..self.tabs.len() {
@@ -99,24 +136,305 @@ impl Browser {
         }
 
         let chrome = !self.page_fullscreen && !self.window_fullscreen;
+        let vertical = self.profile.settings.tab_layout == TabLayout::Vertical;
         if chrome {
-            self.draw_tab_strip(ui);
+            if !vertical {
+                self.draw_tab_strip(ui);
+            }
             self.draw_toolbar(ui);
             if self.profile.settings.show_bookmarks_bar && !self.profile.bookmarks.is_empty() {
                 self.draw_bookmarks_bar(ui);
             }
+            if self.find.open {
+                self.draw_find_bar(ui);
+            }
+            if vertical {
+                self.draw_vertical_tabs(ui);
+            }
+            if self.panel != SidePanel::None {
+                self.draw_side_panel(ui);
+            }
         }
-        if chrome && self.panel != SidePanel::None {
-            self.draw_side_panel(ui);
+
+        if self.find.open {
+            if let Some(webview) = self.active_webview().cloned() {
+                self.find.search_if_changed(&webview, &self.window);
+            }
         }
 
         self.content_rect = ui.available_rect_before_wrap();
         self.draw_content(ui);
         self.draw_page_controls(&ctx);
+        if self.print_job.is_some() {
+            self.draw_print_dialog(&ctx);
+        }
         if self.menu_open {
             self.draw_menu(&ctx);
         }
         self.draw_toast(&ctx);
+    }
+
+    // ----- find in page -----------------------------------------------------
+
+    fn draw_find_bar(&mut self, ui: &mut Ui) {
+        enum Act {
+            None,
+            Step(i32),
+            Close,
+        }
+        let mut act = Act::None;
+        let (current, total) = *self.find.result.borrow();
+        egui::Panel::top("find_bar")
+            .frame(Frame::new().fill(ui.visuals().extreme_bg_color).inner_margin(Margin::symmetric(8, 4)))
+            .show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.find.query)
+                            .id(Id::new("find_query"))
+                            .hint_text("Find in page")
+                            .desired_width(260.0),
+                    );
+                    if self.find.focus {
+                        resp.request_focus();
+                        self.find.focus = false;
+                    }
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(EKey::Enter)) {
+                        act = Act::Step(if ui.input(|i| i.modifiers.shift) { -1 } else { 1 });
+                        resp.request_focus();
+                    }
+                    if resp.has_focus() && ui.input(|i| i.key_pressed(EKey::Escape)) {
+                        act = Act::Close;
+                    }
+                    if icon_button(ui, Icon::Up, 24.0, total > 0, "Previous (Shift+Enter)").clicked() {
+                        act = Act::Step(-1);
+                    }
+                    if icon_button(ui, Icon::Down, 24.0, total > 0, "Next (Enter)").clicked() {
+                        act = Act::Step(1);
+                    }
+                    let status = if self.find.query.is_empty() {
+                        String::new()
+                    } else if total == 0 {
+                        "No matches".into()
+                    } else {
+                        format!("{current} of {total}")
+                    };
+                    let color = if !self.find.query.is_empty() && total == 0 { Color32::from_rgb(210, 80, 70) } else { ui.visuals().weak_text_color() };
+                    ui.label(RichText::new(status).color(color));
+                    ui.checkbox(&mut self.find.match_case, "Match case");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if icon_button(ui, Icon::Close, 22.0, true, "Close (Esc)").clicked() {
+                            act = Act::Close;
+                        }
+                    });
+                });
+            });
+        match act {
+            Act::Step(d) => self.find_step(d),
+            Act::Close => self.close_find(),
+            Act::None => {},
+        }
+    }
+
+    // ----- printing ---------------------------------------------------------
+
+    fn draw_print_dialog(&mut self, ctx: &egui::Context) {
+        let Some(job) = self.print_job.clone() else { return };
+        let accent = self.accent();
+        enum Act {
+            None,
+            Cancel,
+            Print,
+            Save,
+            Open,
+        }
+        let mut act = Act::None;
+        {
+            let mut j = job.borrow_mut();
+            let modal = egui::Modal::new(Id::new("print_dialog")).show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.label(RichText::new("Print").size(18.0).strong());
+                ui.label(RichText::new(truncate(&j.title, 60)).weak());
+                ui.add_space(8.0);
+                match j.stage.clone() {
+                    crate::print::Stage::Measuring | crate::print::Stage::Capturing => {
+                        let (done, of) = j.progress();
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().color(accent));
+                            ui.label(format!("Preparing pages… ({done} of {of} screens)"));
+                        });
+                        ui.add(egui::ProgressBar::new(done as f32 / of as f32).fill(accent));
+                        ui.add_space(8.0);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Cancel").clicked() {
+                                act = Act::Cancel;
+                            }
+                        });
+                    },
+                    crate::print::Stage::Failed(e) => {
+                        ui.label(RichText::new(e).color(Color32::from_rgb(210, 80, 70)));
+                        if ui.button("Close").clicked() {
+                            act = Act::Cancel;
+                        }
+                    },
+                    crate::print::Stage::Ready => {
+                        ui.label(format!("{} page{} (A4)", j.pages, if j.pages == 1 { "" } else { "s" }));
+                        ui.add_space(6.0);
+                        if j.printers.is_empty() {
+                            ui.label(RichText::new("No printers found. Save as PDF, or open the PDF and print from your PDF viewer.").weak());
+                        } else {
+                            egui::Grid::new("print_opts").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                                ui.label("Printer");
+                                let selected = j.printers.get(j.printer).cloned().unwrap_or_default();
+                                egui::ComboBox::from_id_salt("printer").selected_text(selected).width(240.0).show_ui(ui, |ui| {
+                                    let names = j.printers.clone();
+                                    for (i, name) in names.iter().enumerate() {
+                                        ui.selectable_value(&mut j.printer, i, name);
+                                    }
+                                });
+                                ui.end_row();
+                                ui.label("Copies");
+                                ui.add(egui::DragValue::new(&mut j.copies).range(1..=99));
+                                ui.end_row();
+                            });
+                        }
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Save as PDF…").clicked() {
+                                act = Act::Save;
+                            }
+                            if ui.button("Open PDF").clicked() {
+                                act = Act::Open;
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let print = egui::Button::new(RichText::new("Print").color(Color32::WHITE)).fill(accent);
+                                if ui.add_enabled(!j.printers.is_empty(), print).clicked() {
+                                    act = Act::Print;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    act = Act::Cancel;
+                                }
+                            });
+                        });
+                    },
+                }
+            });
+            if modal.should_close() && matches!(act, Act::None) {
+                act = Act::Cancel;
+            }
+        }
+
+        let (pdf, printer, copies, title) = {
+            let j = job.borrow();
+            (j.pdf.clone(), j.printers.get(j.printer).cloned(), j.copies, j.title.clone())
+        };
+        match act {
+            Act::None => return,
+            Act::Cancel => {},
+            Act::Print => {
+                if let (Some(pdf), Some(printer)) = (&pdf, &printer) {
+                    match crate::print::send_to_printer(pdf, printer, copies) {
+                        Ok(()) => self.toast(format!("Sent to {printer}")),
+                        Err(e) => self.toast(format!("Printing failed: {e}")),
+                    }
+                }
+            },
+            Act::Save => {
+                if let Some(pdf) = &pdf {
+                    let name: String = title.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+                    let dialog = rfd::FileDialog::new().set_file_name(format!("{}.pdf", name.trim())).add_filter("PDF", &["pdf"]);
+                    match dialog.save_file() {
+                        Some(target) => match std::fs::copy(pdf, &target) {
+                            Ok(_) => self.toast("Saved PDF"),
+                            Err(e) => self.toast(format!("Couldn't save: {e}")),
+                        },
+                        None => return,
+                    }
+                }
+            },
+            Act::Open => {
+                if let Some(pdf) = &pdf {
+                    open_path(pdf);
+                }
+                return;
+            },
+        }
+        self.print_job = None;
+    }
+
+    // ----- vertical tabs ----------------------------------------------------
+
+    fn draw_vertical_tabs(&mut self, ui: &mut Ui) {
+        let mut select = None;
+        let mut close = None;
+        let mut new_tab = false;
+        let accent = self.accent();
+        let private = self.profile.is_private();
+        egui::Panel::left("vertical_tabs")
+            .resizable(true)
+            .default_size(220.0)
+            .size_range(140.0..=360.0)
+            .frame(Frame::new().fill(ui.visuals().panel_fill).inner_margin(Margin::same(6)))
+            .show_inside(ui, |ui| {
+                if private {
+                    ui.label(RichText::new(" Private window ").size(11.0).strong().color(Color32::WHITE).background_color(Color32::from_rgb(110, 60, 160)));
+                }
+                if ui.add(egui::Button::new("+  New tab").frame(false).min_size(vec2(ui.available_width(), 28.0))).clicked() {
+                    new_tab = true;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    for (i, tab) in self.tabs.iter().enumerate() {
+                        let selected = i == self.active;
+                        let frame = Frame::new()
+                            .fill(if selected { ui.visuals().extreme_bg_color } else { Color32::TRANSPARENT })
+                            .stroke(if selected { egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.5)) } else { egui::Stroke::NONE })
+                            .corner_radius(CornerRadius::same(self.profile.settings.roundness))
+                            .inner_margin(Margin::symmetric(8, 5));
+                        let resp = frame.show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                self.tab_icon(ui, tab);
+                                let text = RichText::new(tab.title()).size(13.0);
+                                ui.add(egui::Label::new(if selected { text.strong() } else { text }).truncate().selectable(false));
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if icon_button(ui, Icon::Close, 18.0, true, "Close tab").clicked() {
+                                        close = Some(i);
+                                    }
+                                });
+                            });
+                        });
+                        let resp = ui.interact(resp.response.rect, Id::new(("vtab", i)), Sense::click()).on_hover_text(tab.title());
+                        if resp.clicked() {
+                            select = Some(i);
+                        }
+                        if resp.middle_clicked() {
+                            close = Some(i);
+                        }
+                    }
+                });
+            });
+        if let Some(i) = close {
+            self.close_tab(i);
+        } else if let Some(i) = select {
+            self.activate(i);
+        }
+        if new_tab {
+            self.new_tab();
+        }
+    }
+
+    /// Favicon, spinner, crash marker or letter tile for a tab.
+    fn tab_icon(&self, ui: &mut Ui, tab: &crate::browser::Tab) {
+        if tab.crashed.is_some() {
+            ui.label(RichText::new("⚠").color(Color32::from_rgb(220, 60, 60)));
+        } else if tab.loading() {
+            ui.add(egui::Spinner::new().size(14.0).color(self.accent()));
+        } else if let Some(icon) = &tab.favicon {
+            ui.add(egui::Image::new(icon).fit_to_exact_size(Vec2::splat(16.0)));
+        } else {
+            let url = tab.url().map(|u| u.to_string()).unwrap_or_default();
+            letter_icon(ui, &tab.title(), &url, 16.0);
+        }
     }
 
     // ----- tab strip --------------------------------------------------------
@@ -149,20 +467,12 @@ impl Browser {
                                     let selected = i == self.active;
                                     let frame = Frame::new()
                                         .fill(if selected { tab_fill } else { Color32::TRANSPARENT })
-                                        .corner_radius(CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 })
+                                        .corner_radius(CornerRadius { nw: self.profile.settings.roundness + 2, ne: self.profile.settings.roundness + 2, sw: 0, se: 0 })
                                         .inner_margin(Margin { left: 10, right: 4, top: 6, bottom: 6 });
                                     let resp = frame.show(ui, |ui| {
                                         ui.set_width(width - 14.0);
                                         ui.horizontal(|ui| {
-                                            if tab.crashed.is_some() {
-                                                ui.label(RichText::new("⚠").color(Color32::from_rgb(220, 60, 60)));
-                                            } else if tab.loading() {
-                                                ui.add(egui::Spinner::new().size(14.0));
-                                            } else if let Some(icon) = &tab.favicon {
-                                                ui.add(egui::Image::new(icon).fit_to_exact_size(Vec2::splat(16.0)));
-                                            } else {
-                                                letter_icon(ui, &tab.url().map(|u| u.to_string()).unwrap_or_else(|| "F".into()), 16.0);
-                                            }
+                                            self.tab_icon(ui, tab);
                                             let title = tab.title();
                                             let text = RichText::new(title.clone()).size(13.0);
                                             let text = if selected { text.strong() } else { text };
@@ -199,7 +509,7 @@ impl Browser {
             self.activate(i);
         }
         if new_tab {
-            self.open_home_tab();
+            self.new_tab();
         }
     }
 
@@ -215,6 +525,13 @@ impl Browser {
         let bookmarked = url.as_ref().is_some_and(|u| self.profile.is_bookmarked(u.as_str()));
         let zoom = self.active_tab().zoom;
         let active_downloads = self.downloads.active_count();
+        let accent = self.accent();
+        let (show_home, show_star, show_dl) = (
+            self.profile.settings.show_home_button,
+            self.profile.settings.show_bookmark_button,
+            self.profile.settings.show_downloads_button,
+        );
+        let button = if self.profile.settings.compact { 26.0 } else { 30.0 };
 
         let mut url_rect = egui::Rect::NOTHING;
         let mut url_focused = false;
@@ -223,39 +540,43 @@ impl Browser {
             .frame(Frame::new().fill(fill).inner_margin(Margin::symmetric(8, 6)))
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
-                    if icon_button(ui, Icon::Back, 30.0, can_back, "Back (Alt+←)").clicked() {
+                    if icon_button(ui, Icon::Back, button, can_back, "Back (Alt+←)").clicked() {
                         self.go_back();
                     }
-                    if icon_button(ui, Icon::Forward, 30.0, can_forward, "Forward (Alt+→)").clicked() {
+                    if icon_button(ui, Icon::Forward, button, can_forward, "Forward (Alt+→)").clicked() {
                         self.go_forward();
                     }
                     let (icon, tip) = if loading { (Icon::Stop, "Loading…") } else { (Icon::Reload, "Reload (Ctrl+R)") };
-                    if icon_button(ui, icon, 30.0, webview.is_some(), tip).clicked() && !loading {
+                    if icon_button(ui, icon, button, webview.is_some(), tip).clicked() && !loading {
                         self.reload();
                     }
-                    if icon_button(ui, Icon::Home, 30.0, true, "Home").clicked() {
+                    if show_home && icon_button(ui, Icon::Home, button, true, "Home").clicked() {
                         self.go_home();
                     }
 
                     // Right-hand buttons are laid out first so the address bar can fill the rest.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let menu = icon_button(ui, Icon::Menu, 30.0, true, "Menu");
+                        let menu = icon_button(ui, Icon::Menu, button, true, "Menu");
                         if menu.clicked() {
                             self.menu_open = !self.menu_open;
                         }
                         ui.memory_mut(|m| m.data.insert_temp(Id::new("menu_button"), menu.rect));
-                        let dl = icon_button(ui, Icon::Download, 30.0, true, "Downloads (Ctrl+J)");
+                        let dl = if show_dl || active_downloads > 0 {
+                            icon_button(ui, Icon::Download, button, true, "Downloads (Ctrl+J)")
+                        } else {
+                            ui.allocate_response(Vec2::ZERO, Sense::hover())
+                        };
                         if active_downloads > 0 {
                             let badge = egui::Rect::from_center_size(dl.rect.right_top() + vec2(-6.0, 6.0), Vec2::splat(14.0));
-                            ui.painter().circle_filled(badge.center(), 7.0, ACCENT);
+                            ui.painter().circle_filled(badge.center(), 7.0, accent);
                             ui.painter().text(badge.center(), Align2::CENTER_CENTER, active_downloads.to_string(), FontId::proportional(9.0), Color32::WHITE);
                         }
                         if dl.clicked() {
                             self.toggle_panel(SidePanel::Downloads);
                         }
-                        if url.is_some() {
+                        if url.is_some() && show_star {
                             let star = if bookmarked { Icon::StarFilled } else { Icon::Star };
-                            if icon_button(ui, star, 30.0, true, "Bookmark this page (Ctrl+D)").clicked() {
+                            if icon_button(ui, star, button, true, "Bookmark this page (Ctrl+D)").clicked() {
                                 self.toggle_bookmark();
                             }
                         }
@@ -321,7 +642,7 @@ impl Browser {
             let w = rect.width();
             let x = rect.left() + ((t * 0.9).fract() * 1.4 - 0.4) * w;
             let bar = egui::Rect::from_min_max(pos2(x.max(rect.left()), rect.top()), pos2((x + w * 0.4).min(rect.right()), rect.top() + 2.5));
-            ui.painter().rect_filled(bar, 1.0, ACCENT);
+            ui.painter().rect_filled(bar, 1.0, accent);
             ui.ctx().request_repaint_after(Duration::from_millis(33));
         }
 
@@ -468,27 +789,110 @@ impl Browser {
         }
     }
 
+    /// Load (once) the start-page wallpaper chosen in settings.
+    fn start_image_texture(&mut self, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        let path = self.profile.settings.start_image.clone();
+        if path.is_empty() {
+            return None;
+        }
+        if self.start_image.as_ref().map(|(p, _)| p) != Some(&path) {
+            let texture = image::open(&path).ok().map(|img| {
+                // Large photos are scaled down: the start page never needs more than ~2560px.
+                let img = if img.width() > 2560 || img.height() > 1600 { img.thumbnail(2560, 1600) } else { img };
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                ctx.load_texture("start-wallpaper", color, egui::TextureOptions::LINEAR)
+            });
+            if texture.is_none() {
+                log::warn!("Could not load start page image {path}");
+            }
+            self.start_image = Some((path, texture));
+        }
+        self.start_image.as_ref().and_then(|(_, t)| t.clone())
+    }
+
     fn draw_start_page(&mut self, ui: &mut Ui, rect: egui::Rect) {
-        ui.painter().rect_filled(rect, 0.0, ui.visuals().window_fill);
-        let width = (rect.width() * 0.7).clamp(280.0, 720.0);
-        let area = egui::Rect::from_min_size(pos2(rect.center().x - width / 2.0, rect.top() + rect.height() * 0.16), vec2(width, rect.height() * 0.84));
+        let settings = self.profile.settings.clone();
+        let accent = self.accent();
+        let painter = ui.painter().clone();
+
+        // Background, and whether text on it should be light.
+        let mut light_text = false;
+        match settings.start_background {
+            StartBackground::Plain => {
+                painter.rect_filled(rect, 0.0, ui.visuals().window_fill);
+            },
+            StartBackground::Color => {
+                let [r, g, b] = settings.start_color;
+                painter.rect_filled(rect, 0.0, Color32::from_rgb(r, g, b));
+                light_text = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 < 140;
+            },
+            StartBackground::Gradient => {
+                let top = accent;
+                let bottom = Color32::from_rgb(
+                    (accent.r() as f32 * 0.25) as u8 + 10,
+                    (accent.g() as f32 * 0.25) as u8 + 10,
+                    (accent.b() as f32 * 0.25) as u8 + 30,
+                );
+                let mut mesh = egui::Mesh::default();
+                mesh.colored_vertex(rect.left_top(), top);
+                mesh.colored_vertex(rect.right_top(), top);
+                mesh.colored_vertex(rect.left_bottom(), bottom);
+                mesh.colored_vertex(rect.right_bottom(), bottom);
+                mesh.add_triangle(0, 1, 2);
+                mesh.add_triangle(1, 2, 3);
+                painter.add(egui::Shape::mesh(mesh));
+                light_text = true;
+            },
+            StartBackground::Image => match self.start_image_texture(ui.ctx()) {
+                Some(tex) => {
+                    // Cover the area, cropping the image rather than stretching it.
+                    let [w, h] = tex.size().map(|v| v as f32);
+                    let scale = (rect.width() / w).max(rect.height() / h);
+                    let (uw, uh) = (rect.width() / (w * scale), rect.height() / (h * scale));
+                    let uv = egui::Rect::from_center_size(pos2(0.5, 0.5), vec2(uw, uh));
+                    painter.image(tex.id(), rect, uv, Color32::WHITE);
+                    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(70));
+                    light_text = true;
+                },
+                None => {
+                    painter.rect_filled(rect, 0.0, ui.visuals().window_fill);
+                },
+            },
+        }
+        let text_color = if light_text { Color32::WHITE } else { ui.visuals().text_color() };
+        let weak_color = if light_text { Color32::from_white_alpha(200) } else { ui.visuals().weak_text_color() };
+
+        let width = (rect.width() * 0.7).clamp(280.0, 760.0);
+        let top = rect.top() + rect.height() * if settings.start_show_clock { 0.10 } else { 0.16 };
+        let area = egui::Rect::from_min_size(pos2(rect.center().x - width / 2.0, top), vec2(width, rect.bottom() - top));
         let mut go: Option<(String, bool)> = None;
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new(APP_NAME).size(52.0).strong().color(ACCENT));
-                let sub = if self.profile.is_private() {
-                    "Private window — history, cookies and site data are forgotten when it closes"
-                } else {
-                    "A native Rust browser · Servo engine"
-                };
-                ui.label(RichText::new(sub).size(14.0).weak());
+                if settings.start_show_clock {
+                    let now = chrono::Local::now();
+                    ui.label(RichText::new(now.format("%H:%M").to_string()).size(64.0).color(text_color));
+                    ui.label(RichText::new(now.format("%A, %e %B").to_string()).size(15.0).color(weak_color));
+                    ui.add_space(14.0);
+                    // Repaint when the minute changes, not continuously.
+                    let secs_left = 60 - now.timestamp() % 60;
+                    ui.ctx().request_repaint_after(Duration::from_secs(secs_left as u64));
+                }
+                let title = if settings.start_title.trim().is_empty() { APP_NAME } else { settings.start_title.as_str() };
+                let title_color = if light_text { Color32::WHITE } else { accent };
+                ui.label(RichText::new(title).size(if settings.start_show_clock { 34.0 } else { 52.0 }).strong().color(title_color));
+                if self.profile.is_private() {
+                    ui.label(RichText::new("Private window — history, cookies and site data are forgotten when it closes").size(14.0).color(weak_color));
+                }
                 ui.add_space(22.0);
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.start_query)
-                        .hint_text(format!("Search with {} or type an address", self.profile.settings.search_engine.name()))
+                        .hint_text(format!("Search with {} or type an address", settings.search_engine.name()))
                         .font(FontId::proportional(17.0))
                         .margin(Margin::symmetric(14, 10))
+                        .background_color(ui.visuals().extreme_bg_color)
                         .desired_width(width),
                 );
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(EKey::Enter)) && !self.start_query.trim().is_empty() {
@@ -496,45 +900,64 @@ impl Browser {
                 }
                 ui.add_space(26.0);
 
-                let tile = |ui: &mut Ui, title: &str, url: &str, go: &mut Option<(String, bool)>| {
-                    let (r, resp) = ui.allocate_exact_size(vec2(104.0, 92.0), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(r, 10.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                // A centred grid of site tiles.
+                let tiles = |ui: &mut Ui, heading: &str, items: Vec<(String, String)>, go: &mut Option<(String, bool)>| {
+                    if items.is_empty() {
+                        return;
                     }
-                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(8.0)).layout(Layout::top_down(Align::Center)));
-                    letter_icon(&mut child, url, 40.0);
-                    child.add(egui::Label::new(RichText::new(truncate(title, 14)).size(12.0)).selectable(false));
-                    let resp = resp.on_hover_text(url);
-                    if resp.clicked() {
-                        *go = Some((url.to_string(), false));
+                    ui.label(RichText::new(heading).strong().color(weak_color));
+                    let tile = vec2(104.0, 92.0);
+                    let per_row = ((ui.available_width() / tile.x) as usize).clamp(1, 8);
+                    for row in items.chunks(per_row) {
+                        let row_width = row.len() as f32 * tile.x;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.add_space((ui.available_width() - row_width).max(0.0) / 2.0);
+                            for (title, url) in row {
+                                let (r, resp) = ui.allocate_exact_size(tile, Sense::click());
+                                if resp.hovered() {
+                                    let fill = if light_text { Color32::from_white_alpha(40) } else { ui.visuals().widgets.hovered.weak_bg_fill };
+                                    ui.painter().rect_filled(r.shrink(2.0), 10.0, fill);
+                                }
+                                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(8.0)).layout(Layout::top_down(Align::Center)));
+                                letter_icon(&mut child, title, url, 40.0);
+                                child.add(egui::Label::new(RichText::new(truncate(title, 14)).size(12.0).color(text_color)).selectable(false));
+                                let resp = resp.on_hover_text(url);
+                                if resp.clicked() {
+                                    *go = Some((url.clone(), false));
+                                }
+                                if resp.middle_clicked() {
+                                    *go = Some((url.clone(), true));
+                                }
+                            }
+                        });
                     }
-                    if resp.middle_clicked() {
-                        *go = Some((url.to_string(), true));
-                    }
+                    ui.add_space(12.0);
                 };
 
-                if !self.profile.bookmarks.is_empty() {
-                    ui.label(RichText::new("Bookmarks").strong().weak());
-                    ui.horizontal_wrapped(|ui| {
-                        for b in self.profile.bookmarks.iter().take(12) {
-                            tile(ui, &b.title, &b.url, &mut go);
-                        }
-                    });
+                if settings.start_show_bookmarks {
+                    let items = self.profile.bookmarks.iter().take(16).map(|b| (b.title.clone(), b.url.clone())).collect();
+                    tiles(ui, "Bookmarks", items, &mut go);
                 }
-                let mut top: Vec<_> = self.profile.history.iter().filter(|h| !self.profile.is_bookmarked(&h.url)).collect();
-                top.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_visit.cmp(&a.last_visit)));
-                if !top.is_empty() {
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("Frequently visited").strong().weak());
-                    ui.horizontal_wrapped(|ui| {
-                        for h in top.iter().take(8) {
-                            let title = if h.title.is_empty() { h.url.as_str() } else { h.title.as_str() };
-                            tile(ui, title, &h.url, &mut go);
-                        }
-                    });
+                if settings.start_show_frequent {
+                    let mut top: Vec<_> = self.profile.history.iter().filter(|h| !self.profile.is_bookmarked(&h.url)).collect();
+                    top.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_visit.cmp(&a.last_visit)));
+                    let items = top
+                        .iter()
+                        .take(8)
+                        .map(|h| (if h.title.is_empty() { h.url.clone() } else { h.title.clone() }, h.url.clone()))
+                        .collect();
+                    tiles(ui, "Frequently visited", items, &mut go);
                 }
             });
         });
+
+        // Quick link to the look settings.
+        let btn = egui::Rect::from_min_size(rect.right_bottom() - vec2(120.0, 40.0), vec2(110.0, 30.0));
+        let resp = ui.put(btn, egui::Button::new(RichText::new("Customize").size(12.0)));
+        if resp.clicked() {
+            self.panel = SidePanel::Settings;
+        }
 
         if let Some((target, new_tab)) = go {
             match Url::parse(&target) {
@@ -552,6 +975,7 @@ impl Browser {
 
         let rect = self.content_rect;
         let ppp = self.ppp;
+        let accent = self.accent();
         let host = host_of(&self.active_tab().url());
         let mouse = self.mouse_position().unwrap_or(rect.center());
         let to_screen = |x: i32, y: i32| rect.min + vec2(x as f32 / ppp, y as f32 / ppp);
@@ -643,7 +1067,7 @@ impl Browser {
                                 if ui.button("Block").clicked() {
                                     outcome = ControlOutcome::Dismiss;
                                 }
-                                if ui.add(egui::Button::new(RichText::new("Allow").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                                if ui.add(egui::Button::new(RichText::new("Allow").color(Color32::WHITE)).fill(accent)).clicked() {
                                     outcome = ControlOutcome::Confirm;
                                 }
                             });
@@ -856,7 +1280,7 @@ impl Browser {
                         resp.clicked()
                     };
                     if row(ui, "New tab", "Ctrl+T") {
-                        self.open_home_tab();
+                        self.new_tab();
                         close = true;
                     }
                     if row(ui, "New private window", "Ctrl+Shift+N") {
@@ -888,6 +1312,14 @@ impl Browser {
                             }
                         });
                     });
+                    if row(ui, "Find in page…", "Ctrl+F") {
+                        self.open_find();
+                        close = true;
+                    }
+                    if row(ui, "Print…", "Ctrl+P") {
+                        self.start_print();
+                        close = true;
+                    }
                     if row(ui, "Full screen", "F11") {
                         self.toggle_window_fullscreen();
                         close = true;
@@ -975,7 +1407,7 @@ impl Browser {
         let mut remove = false;
         let resp = ui
             .horizontal(|ui| {
-                letter_icon(ui, url, 20.0);
+                letter_icon(ui, if title.is_empty() { url } else { title }, url, 20.0);
                 ui.vertical(|ui| {
                     ui.add(egui::Label::new(RichText::new(if title.is_empty() { url } else { title }).size(13.0)).truncate().selectable(false));
                     ui.add(egui::Label::new(RichText::new(url).size(11.0).weak()).truncate().selectable(false));
@@ -1057,10 +1489,10 @@ impl Browser {
             for (i, b) in self.profile.bookmarks.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        if ui.add_enabled(i > 0, egui::Button::new("▲").small().frame(false)).clicked() {
+                        if icon_button(ui, Icon::Up, 16.0, i > 0, "Move up").clicked() {
                             swap = Some((i, i - 1));
                         }
-                        if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small().frame(false)).clicked() {
+                        if icon_button(ui, Icon::Down, 16.0, i + 1 < n, "Move down").clicked() {
                             swap = Some((i, i + 1));
                         }
                     });
@@ -1175,62 +1607,204 @@ impl Browser {
 
     fn draw_settings(&mut self, ui: &mut Ui) {
         let before = format!("{:?}", self.profile.settings);
-        let ctx = ui.ctx().clone();
+        let mut clear_history = false;
+        let mut clear_data = false;
+        let accent_now = self.accent();
+
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             let s = &mut self.profile.settings;
-            ui.label(RichText::new("Search").strong());
-            egui::ComboBox::from_id_salt("engine")
-                .selected_text(s.search_engine.name())
-                .show_ui(ui, |ui| {
+            let section = |ui: &mut Ui, title: &str, open: bool, body: &mut dyn FnMut(&mut Ui)| {
+                egui::CollapsingHeader::new(RichText::new(title).strong()).default_open(open).show(ui, |ui| {
+                    body(ui);
+                    ui.add_space(4.0);
+                });
+            };
+
+            section(ui, "Look", true, &mut |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Theme");
+                    ui.selectable_value(&mut s.theme, ThemeChoice::System, "System");
+                    ui.selectable_value(&mut s.theme, ThemeChoice::Light, "Light");
+                    ui.selectable_value(&mut s.theme, ThemeChoice::Dark, "Dark");
+                });
+                ui.checkbox(&mut s.dark_websites, "Dark websites too")
+                    .on_hover_text("Ask websites for their dark style when the interface is dark. Some sites that don't support dark mode may become hard to read.");
+                ui.label("Accent colour");
+                ui.horizontal_wrapped(|ui| {
+                    const PRESETS: [[u8; 3]; 9] = [
+                        DEFAULT_ACCENT,
+                        [214, 62, 62],
+                        [226, 160, 30],
+                        [64, 160, 90],
+                        [32, 150, 160],
+                        [52, 110, 220],
+                        [110, 80, 210],
+                        [196, 70, 160],
+                        [110, 115, 125],
+                    ];
+                    for preset in PRESETS {
+                        let color = Color32::from_rgb(preset[0], preset[1], preset[2]);
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                        ui.painter().circle_filled(r.center(), 10.0, color);
+                        if s.accent == preset {
+                            ui.painter().circle_stroke(r.center(), 11.5, egui::Stroke::new(2.0_f32, ui.visuals().strong_text_color()));
+                        }
+                        if resp.clicked() {
+                            s.accent = preset;
+                        }
+                    }
+                    let mut c = Color32::from_rgb(s.accent[0], s.accent[1], s.accent[2]);
+                    if ui.color_edit_button_srgba(&mut c).on_hover_text("Custom colour").changed() {
+                        s.accent = [c.r(), c.g(), c.b()];
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Interface size");
+                    ui.add(egui::Slider::new(&mut s.ui_scale, 0.8..=1.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Corner rounding");
+                    ui.add(egui::Slider::new(&mut s.roundness, 0..=14));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Density");
+                    ui.selectable_value(&mut s.compact, false, "Comfortable");
+                    ui.selectable_value(&mut s.compact, true, "Compact");
+                });
+            });
+
+            section(ui, "Tabs & toolbar", true, &mut |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Tabs");
+                    ui.selectable_value(&mut s.tab_layout, TabLayout::Top, "Along the top");
+                    ui.selectable_value(&mut s.tab_layout, TabLayout::Vertical, "Down the side");
+                });
+                ui.checkbox(&mut s.show_bookmarks_bar, "Bookmarks bar");
+                ui.checkbox(&mut s.show_home_button, "Home button");
+                ui.checkbox(&mut s.show_bookmark_button, "Bookmark star");
+                ui.checkbox(&mut s.show_downloads_button, "Downloads button (always shown while downloading)");
+            });
+
+            section(ui, "Start page", true, &mut |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Title");
+                    ui.add(egui::TextEdit::singleline(&mut s.start_title).desired_width(180.0));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Background");
+                    ui.selectable_value(&mut s.start_background, StartBackground::Plain, "Plain");
+                    ui.selectable_value(&mut s.start_background, StartBackground::Gradient, "Accent gradient");
+                    ui.selectable_value(&mut s.start_background, StartBackground::Color, "Colour");
+                    ui.selectable_value(&mut s.start_background, StartBackground::Image, "Image");
+                });
+                match s.start_background {
+                    StartBackground::Color => {
+                        ui.horizontal(|ui| {
+                            ui.label("Colour");
+                            let mut c = Color32::from_rgb(s.start_color[0], s.start_color[1], s.start_color[2]);
+                            if ui.color_edit_button_srgba(&mut c).changed() {
+                                s.start_color = [c.r(), c.g(), c.b()];
+                            }
+                        });
+                    },
+                    StartBackground::Image => {
+                        ui.horizontal(|ui| {
+                            if ui.button("Choose image…").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "bmp"])
+                                    .pick_file()
+                                {
+                                    s.start_image = path.to_string_lossy().into_owned();
+                                }
+                            }
+                            if !s.start_image.is_empty() && ui.button("Remove").clicked() {
+                                s.start_image.clear();
+                            }
+                        });
+                        let name = std::path::Path::new(&s.start_image)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "No image chosen".into());
+                        ui.label(RichText::new(name).weak().size(12.0));
+                    },
+                    _ => {},
+                }
+                ui.checkbox(&mut s.start_show_clock, "Clock and date");
+                ui.checkbox(&mut s.start_show_bookmarks, "Bookmark tiles");
+                ui.checkbox(&mut s.start_show_frequent, "Frequently visited tiles");
+            });
+
+            section(ui, "Search", false, &mut |ui| {
+                egui::ComboBox::from_id_salt("engine").selected_text(s.search_engine.name()).show_ui(ui, |ui| {
                     for e in SearchEngine::ALL {
                         ui.selectable_value(&mut s.search_engine, e, e.name());
                     }
                 });
-            ui.add_space(10.0);
-
-            ui.label(RichText::new("Appearance").strong());
-            ui.horizontal(|ui| {
-                let old = s.theme;
-                ui.selectable_value(&mut s.theme, ThemeChoice::System, "System");
-                ui.selectable_value(&mut s.theme, ThemeChoice::Light, "Light");
-                ui.selectable_value(&mut s.theme, ThemeChoice::Dark, "Dark");
-                if s.theme != old {
-                    set_theme(&ctx, s.theme);
+                if s.search_engine == SearchEngine::Custom {
+                    ui.label(RichText::new("Search URL — use %s where the search words go").size(12.0));
+                    ui.add(egui::TextEdit::singleline(&mut s.custom_search_url).hint_text("https://example.com/search?q=%s").desired_width(f32::INFINITY));
+                    if !s.custom_search_url.contains("%s") {
+                        ui.label(RichText::new("Needs %s — using DuckDuckGo until then").size(11.0).color(Color32::from_rgb(210, 120, 40)));
+                    }
                 }
             });
-            ui.checkbox(&mut s.show_bookmarks_bar, "Show bookmarks bar");
-            ui.horizontal(|ui| {
-                ui.label("Default zoom");
-                ui.add(egui::Slider::new(&mut s.default_zoom, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+
+            section(ui, "Start-up & new tabs", false, &mut |ui| {
+                ui.checkbox(&mut s.restore_session, "Reopen tabs from last time");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("New tabs open");
+                    ui.selectable_value(&mut s.new_tab_page, NewTabPage::StartPage, "Start page");
+                    ui.selectable_value(&mut s.new_tab_page, NewTabPage::HomePage, "Home page");
+                    ui.selectable_value(&mut s.new_tab_page, NewTabPage::Blank, "Blank");
+                });
+                ui.label("Home page (empty = start page)");
+                ui.add(egui::TextEdit::singleline(&mut s.home_page).hint_text("https://…").desired_width(f32::INFINITY));
+                ui.horizontal(|ui| {
+                    ui.label("Default page zoom");
+                    ui.add(egui::Slider::new(&mut s.default_zoom, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                });
             });
-            ui.add_space(10.0);
 
-            ui.label(RichText::new("Start-up").strong());
-            ui.checkbox(&mut s.restore_session, "Reopen tabs from last time");
-            ui.label("Home page (leave empty for the start page)");
-            ui.add(egui::TextEdit::singleline(&mut s.home_page).hint_text("https://…").desired_width(f32::INFINITY));
-            ui.add_space(10.0);
+            section(ui, "Downloads", false, &mut |ui| {
+                ui.checkbox(&mut s.ask_where_to_save, "Ask where to save each file");
+            });
 
-            ui.label(RichText::new("Downloads").strong());
-            ui.checkbox(&mut s.ask_where_to_save, "Ask where to save each file");
-            ui.add_space(10.0);
+            section(ui, "Privacy", false, &mut |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    clear_history = ui.button("Clear history").clicked();
+                    clear_data = ui.button("Clear cookies & site data").clicked();
+                });
+            });
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Reset look to defaults").clicked() {
+                    let d = crate::profile::Settings::default();
+                    s.theme = d.theme;
+                    s.accent = d.accent;
+                    s.ui_scale = d.ui_scale;
+                    s.compact = d.compact;
+                    s.roundness = d.roundness;
+                    s.tab_layout = d.tab_layout;
+                    s.start_background = d.start_background;
+                    s.start_title = d.start_title;
+                }
+            });
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("{APP_NAME} {} · Servo engine · MIT licensed", env!("CARGO_PKG_VERSION")))
+                    .color(accent_now)
+                    .size(11.0),
+            );
         });
-        let mut clear_data = false;
-        ui.label(RichText::new("Privacy").strong());
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Clear history").clicked() {
-                self.profile.clear_history();
-                self.toast("History cleared");
-            }
-            if ui.button("Clear cookies & site data").clicked() {
-                clear_data = true;
-            }
-        });
+
+        if clear_history {
+            self.profile.clear_history();
+            self.toast("History cleared");
+        }
         if clear_data {
             self.clear_site_data();
         }
-        ui.add_space(12.0);
-        ui.label(RichText::new(format!("{APP_NAME} {} · Servo engine · MIT licensed", env!("CARGO_PKG_VERSION"))).weak().size(11.0));
         if format!("{:?}", self.profile.settings) != before {
             self.profile.mark_dirty();
         }

@@ -5,9 +5,9 @@
 
 use url::Url;
 
-use crate::profile::SearchEngine;
+use crate::profile::Settings;
 
-pub fn input_to_url(input: &str, engine: SearchEngine) -> Option<Url> {
+pub fn input_to_url(input: &str, settings: &Settings) -> Option<Url> {
     let input = input.trim();
     if input.is_empty() {
         return None;
@@ -47,22 +47,28 @@ pub fn input_to_url(input: &str, engine: SearchEngine) -> Option<Url> {
     }
 
     // Otherwise treat it as a search.
-    Some(engine.search_url(input))
+    Some(settings.search_url(input))
 }
 
 #[cfg(test)]
 mod tests {
     use super::input_to_url;
-    use crate::profile::SearchEngine;
+    use crate::profile::{SearchEngine, Settings};
 
     #[test]
     fn parses_inputs() {
-        let e = SearchEngine::DuckDuckGo;
+        let e = &Settings::default();
         assert_eq!(input_to_url("example.com", e).unwrap().as_str(), "https://example.com/");
         assert_eq!(input_to_url("localhost:3000", e).unwrap().as_str(), "http://localhost:3000/");
         assert_eq!(input_to_url("about:blank", e).unwrap().as_str(), "about:blank");
         assert!(input_to_url("rust servo engine", e).unwrap().as_str().contains("q=rust+servo+engine"));
         assert!(input_to_url("what is 3.5", e).unwrap().as_str().contains("duckduckgo"));
         assert!(input_to_url("   ", e).is_none());
+        let custom = Settings {
+            search_engine: SearchEngine::Custom,
+            custom_search_url: "https://search.example/find?term=%s".into(),
+            ..Settings::default()
+        };
+        assert_eq!(input_to_url("a b", &custom).unwrap().as_str(), "https://search.example/find?term=a+b");
     }
 }

@@ -54,11 +54,14 @@ All functions are `impl Browser` methods called from `draw`, in this order:
 | `draw_side_panel` | Frame for `draw_history`, `draw_bookmarks`, `draw_downloads`, `draw_settings` |
 | `draw_content` | The page (resize, paint, blit), the start page, or the crash panel; the link status bubble |
 | `draw_start_page` | Logo, search box, bookmark tiles, frequently-visited tiles |
+| `draw_find_bar` | Find bar (query, n of m, up/down, match case) |
+| `draw_print_dialog` | Print progress, printer and copies, Save as PDF / Open PDF |
+| `draw_vertical_tabs` | Tab list down the side (when tabs are set to "Down the side") |
 | `draw_page_controls` | The active tab's dialog/popup and its outcome |
 | `draw_menu` | Main menu |
 | `draw_toast` | Short fading notices ("Bookmarked", "Zoom 110%") |
 
-Helpers: `style` / `set_theme` (egui look), `letter_icon` (coloured letter tile when there's no favicon), `link_row` (row with hover ✕ used by history and bookmarks), `truncate`, `host_of`.
+Helpers: `style` (applies theme, accent, interface size, density and rounding from `Settings`; only re-run when `style_key` changes) / `set_theme`, `letter_icon` (coloured letter tile when there's no favicon), `link_row` (row with hover ✕ used by history and bookmarks), `truncate`, `host_of`.
 
 ## `profile.rs` — settings and data
 
@@ -67,6 +70,14 @@ Helpers: `style` / `set_theme` (egui look), `letter_icon` (coloured letter tile 
 ## `downloads.rs` — downloads
 
 `Status`, `Progress`, `Download` (`snapshot`, `cancel`), `Downloads` (`start`, `active_count`, `clear_finished`), and helpers `looks_like_download`, `human_size`, `open_path`. See [Downloads](Downloads).
+
+## `find.rs` — find in page
+
+`FindState` (`open`, `query`, `match_case`, `result`) with `search_if_changed`, `step`, `close`, `reset`. Servo has no find API, so a script (`SCRIPT`) runs in the page: it walks text nodes with a `TreeWalker`, wraps matches in `<mark data-ferrum-find>`, colours the current one orange, scrolls it into view and returns `[current, total]`. Closing the bar runs it with an empty query, which unwraps all marks. `reset` is called on navigation and tab switches.
+
+## `print.rs` — printing
+
+`PrintJob` is a small state machine advanced from `Browser::pump`: **Measuring** (ask the page for its height) → **Capturing** (scroll one screen, `take_screenshot`, repeat, up to 40 screens) → **Ready** (scroll restored, PDF built, printers listed) or **Failed**. `stitch` joins the screenshots and drops the overlap of the last screen; `write_pdf` cuts the result into A4 pages and writes a PDF by hand (one JPEG image per page). `list_printers` uses `lpstat` (macOS/Linux) or `Get-Printer` (Windows); `send_to_printer` uses `lp` or PowerShell's `PrintTo`.
 
 ## `location.rs` — address bar input
 
@@ -78,4 +89,4 @@ Helpers: `style` / `set_theme` (egui look), `letter_icon` (coloured letter tile 
 
 ## `icons.rs` — icons
 
-`Icon` (Back, Forward, Reload, Stop, Home, Plus, Close, Menu, Star, StarFilled, Download) and `icon_button(ui, icon, size, enabled, tooltip)`. Icons are drawn from line segments and polygons, so they're crisp at any scale and need no image or icon-font files.
+`Icon` (Back, Forward, Reload, Stop, Home, Plus, Close, Menu, Star, StarFilled, Download, Up, Down) and `icon_button(ui, icon, size, enabled, tooltip)`. Icons are drawn from line segments and polygons, so they're crisp at any scale and need no image or icon-font files.

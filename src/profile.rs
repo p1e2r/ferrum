@@ -30,16 +30,19 @@ pub enum SearchEngine {
     Brave,
     Startpage,
     Ecosia,
+    /// A URL template from settings, with `%s` where the query goes.
+    Custom,
 }
 
 impl SearchEngine {
-    pub const ALL: [SearchEngine; 6] = [
+    pub const ALL: [SearchEngine; 7] = [
         SearchEngine::DuckDuckGo,
         SearchEngine::Google,
         SearchEngine::Bing,
         SearchEngine::Brave,
         SearchEngine::Startpage,
         SearchEngine::Ecosia,
+        SearchEngine::Custom,
     ];
 
     pub fn name(self) -> &'static str {
@@ -50,10 +53,18 @@ impl SearchEngine {
             SearchEngine::Brave => "Brave Search",
             SearchEngine::Startpage => "Startpage",
             SearchEngine::Ecosia => "Ecosia",
+            SearchEngine::Custom => "Custom",
         }
     }
 
-    pub fn search_url(self, query: &str) -> Url {
+    /// Search URL for `query`. `custom` is the user's template (used for `Custom`).
+    pub fn search_url(self, query: &str, custom: &str) -> Url {
+        if self == SearchEngine::Custom && custom.contains("%s") {
+            let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+            if let Ok(url) = Url::parse(&custom.replace("%s", &encoded)) {
+                return url;
+            }
+        }
         let base = match self {
             SearchEngine::DuckDuckGo => "https://duckduckgo.com/html/",
             SearchEngine::Google => "https://www.google.com/search",
@@ -61,6 +72,7 @@ impl SearchEngine {
             SearchEngine::Brave => "https://search.brave.com/search",
             SearchEngine::Startpage => "https://www.startpage.com/do/search",
             SearchEngine::Ecosia => "https://www.ecosia.org/search",
+            SearchEngine::Custom => "https://duckduckgo.com/html/",
         };
         let mut url = Url::parse(base).expect("valid search URL");
         url.query_pairs_mut().append_pair("q", query);
@@ -68,30 +80,112 @@ impl SearchEngine {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TabLayout {
+    #[default]
+    Top,
+    /// Tabs in a list down the left side.
+    Vertical,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StartBackground {
+    /// The theme's normal background.
+    #[default]
+    Plain,
+    /// A gradient made from the accent colour.
+    Gradient,
+    /// A solid colour of your choice.
+    Color,
+    /// An image file from disk.
+    Image,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NewTabPage {
+    #[default]
+    StartPage,
+    HomePage,
+    Blank,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    // General
     pub search_engine: SearchEngine,
-    pub theme: ThemeChoice,
+    /// Template for `SearchEngine::Custom`, e.g. `https://example.com/?q=%s`.
+    pub custom_search_url: String,
     /// Empty = the built-in start page.
     pub home_page: String,
+    pub new_tab_page: NewTabPage,
     pub restore_session: bool,
-    pub show_bookmarks_bar: bool,
     pub default_zoom: f32,
     pub ask_where_to_save: bool,
+
+    // Look
+    pub theme: ThemeChoice,
+    /// Tell websites to use their dark style when the interface is dark.
+    pub dark_websites: bool,
+    pub accent: [u8; 3],
+    /// Size of the whole interface (not the page), 0.8–1.5.
+    pub ui_scale: f32,
+    pub compact: bool,
+    /// Corner rounding of buttons, tabs and fields, in points.
+    pub roundness: u8,
+    pub tab_layout: TabLayout,
+    pub show_bookmarks_bar: bool,
+    pub show_home_button: bool,
+    pub show_bookmark_button: bool,
+    pub show_downloads_button: bool,
+
+    // Start page
+    pub start_title: String,
+    pub start_background: StartBackground,
+    pub start_color: [u8; 3],
+    pub start_image: String,
+    pub start_show_clock: bool,
+    pub start_show_bookmarks: bool,
+    pub start_show_frequent: bool,
 }
+
+pub const DEFAULT_ACCENT: [u8; 3] = [222, 98, 52];
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             search_engine: SearchEngine::default(),
-            theme: ThemeChoice::default(),
+            custom_search_url: String::new(),
             home_page: String::new(),
+            new_tab_page: NewTabPage::default(),
             restore_session: true,
-            show_bookmarks_bar: true,
             default_zoom: 1.0,
             ask_where_to_save: false,
+            theme: ThemeChoice::default(),
+            dark_websites: false,
+            accent: DEFAULT_ACCENT,
+            ui_scale: 1.0,
+            compact: false,
+            roundness: 6,
+            tab_layout: TabLayout::default(),
+            show_bookmarks_bar: true,
+            show_home_button: true,
+            show_bookmark_button: true,
+            show_downloads_button: true,
+            start_title: "Ferrum".into(),
+            start_background: StartBackground::default(),
+            start_color: [40, 44, 58],
+            start_image: String::new(),
+            start_show_clock: false,
+            start_show_bookmarks: true,
+            start_show_frequent: true,
         }
+    }
+}
+
+impl Settings {
+    pub fn search_url(&self, query: &str) -> Url {
+        self.search_engine.search_url(query, &self.custom_search_url)
     }
 }
 

@@ -22,7 +22,10 @@ A fast, native desktop web browser written in Rust.
 | View | Zoom per tab (Ctrl +/−/0, Ctrl+scroll), default zoom, full screen (F11), pages' own full-screen video etc. |
 | Privacy | Private windows (Ctrl+Shift+N — nothing written to disk), clear cookies & site data |
 | Session | Reopens your tabs at start-up, reopen closed tab (Ctrl+Shift+T), crashed-tab recovery |
-| Theme | System / light / dark — also passed to sites (`prefers-color-scheme`) |
+| Find in page | Ctrl+F: highlights every match, "3 of 12", Enter / Shift+Enter, match case |
+| Printing | Ctrl+P: captures the whole page into A4 pages, pick a printer and copies, or save as PDF |
+| Customization | Theme, accent colour, interface size, density, corner rounding, tabs on top or down the side, which toolbar buttons show, start page title / background (gradient, colour or your own image) / clock / tiles, custom search engine, what new tabs open |
+| Theme | System / light / dark; optionally ask websites for their dark style too |
 
 ### Efficiency
 
@@ -31,13 +34,35 @@ A fast, native desktop web browser written in Rust.
 - Downloads stream straight to disk on their own threads.
 - History and bookmark lists only lay out the rows on screen.
 
+## System requirements
+
+| | Minimum | Comfortable |
+|---|---|---|
+| CPU | 64-bit dual-core | 4+ cores (Servo lays pages out in parallel) |
+| RAM | 4 GB — about 300 MB for one simple tab | 8 GB |
+| GPU | OpenGL 3.1 (Intel HD 4000 or newer) | any GPU from the last ~10 years |
+| OS | 64-bit Windows 10+, macOS 11+, or Linux | |
+
+Light browsing works on old hardware; heavy web apps and video sites need more. Building from source needs far more than running it — on a weak machine, download a prebuilt release instead.
+
 ## Download
 
 Pre-built binaries for every platform are produced by [GitHub Actions](../../actions) on each push, and attached to [Releases](../../releases) for tagged versions.
 
 ## Build
 
-Servo is a large engine: the first build takes 20–60 minutes and needs ~8 GB RAM and ~20 GB disk. Later builds are quick.
+You need about 8 GB of RAM and 20 GB of free disk.
+
+> **Build time disclaimer.** The first build compiles all of Servo (~800 crates), so it is slow, and how slow depends on your machine:
+>
+> | Machine | First build (approx.) |
+> |---|---|
+> | Apple Silicon Mac (M1–M4, 8+ cores, 16 GB) | 15–25 min |
+> | Recent 8-core Windows/Linux desktop, 16 GB | 20–30 min |
+> | 4-core laptop, 8 GB | 45–60+ min |
+> | 2-core / 7 GB cloud VM (measured: debug build) | ~23 min debug, ~31 min after a dependency change |
+>
+> Only the last row was measured; the others are estimates. Release builds (`--release`, with link-time optimisation) take longer than debug builds, and `scripts/build-macos.sh` builds twice (Apple Silicon + Intel). With less than 8 GB of RAM, use `cargo build -j2` to avoid running out of memory. After the first build, changes to Ferrum's own code rebuild in about a minute.
 
 ```sh
 cargo run --release                    # start page
@@ -92,6 +117,8 @@ On macOS use ⌘ where it says Ctrl.
 | Ctrl+L, F6 | Address bar |
 | Ctrl+R, F5 | Reload |
 | Alt+← / Alt+→ | Back / forward |
+| Ctrl+F, Ctrl+G / F3 | Find in page, next match (Shift for previous) |
+| Ctrl+P | Print |
 | Ctrl+D | Bookmark page |
 | Ctrl+Shift+B | Toggle bookmarks bar |
 | Ctrl+Shift+O / Ctrl+H / Ctrl+J | Bookmarks / history / downloads panel |
@@ -118,6 +145,8 @@ src/browser.rs    window, tabs, Servo callbacks, input, shortcuts
 src/ui.rs         the interface: tabs, toolbar, menus, panels, page dialogs
 src/profile.rs    settings, bookmarks, history, session (JSON)
 src/downloads.rs  download manager
+src/find.rs       find in page
+src/print.rs      page capture, PDF writer, printers
 src/location.rs   address-bar text → URL or search
 src/keys.rs       keyboard events → W3C key events for Servo
 src/icons.rs      vector toolbar icons
@@ -126,7 +155,7 @@ scripts/          build scripts for macOS, Linux and Windows
 
 ## Limitations
 
-Servo is still maturing, so some heavy sites (big web apps, some video players) won't render perfectly, and a few CSS features are missing. Not built yet: find in page (Servo has no API for it yet), extensions, sync, and printing. JavaScript runs on SpiderMonkey (C++), the engine Servo uses; everything else in Ferrum's own code is Rust.
+Servo is still maturing, so some heavy sites (big web apps, some video players) won't render perfectly, and a few CSS features are missing. Not built yet: extensions and sync. Find in page and printing are implemented by Ferrum itself, because Servo has no API for them yet: find runs a small highlighting script in the page, and printing captures the page as images (so printed text isn't selectable, and pages longer than 40 screens are cut off). JavaScript runs on SpiderMonkey (C++), the engine Servo uses; everything else in Ferrum's own code is Rust.
 
 ## License
 

@@ -2,7 +2,18 @@
 
 ## Build times
 
-The first build compiles Servo (~800 crates) and downloads a prebuilt SpiderMonkey for the target: expect 20–60 minutes, ~8 GB RAM and ~20 GB disk. Afterwards, changing Ferrum's own code rebuilds in under a minute.
+The first build compiles Servo (~800 crates) and downloads a prebuilt SpiderMonkey for the target. It needs ~8 GB RAM and ~20 GB disk.
+
+> **Build time disclaimer.** The first build compiles all of Servo (~800 crates), so it is slow, and how slow depends on your machine:
+>
+> | Machine | First build (approx.) |
+> |---|---|
+> | Apple Silicon Mac (M1–M4, 8+ cores, 16 GB) | 15–25 min |
+> | Recent 8-core Windows/Linux desktop, 16 GB | 20–30 min |
+> | 4-core laptop, 8 GB | 45–60+ min |
+> | 2-core / 7 GB cloud VM (measured: debug build) | ~23 min debug, ~31 min after a dependency change |
+>
+> Only the last row was measured; the others are estimates. Release builds (`--release`, with link-time optimisation) take longer than debug builds, and `scripts/build-macos.sh` builds twice (Apple Silicon + Intel). With less than 8 GB of RAM, use `cargo build -j2` to avoid running out of memory. After the first build, changes to Ferrum's own code rebuild in about a minute.
 
 `Cargo.toml` sets `opt-level = 2` for dependencies even in debug builds, because an unoptimised Servo is too slow to browse with.
 

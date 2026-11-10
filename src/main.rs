@@ -14,9 +14,11 @@
 
 mod browser;
 mod downloads;
+mod find;
 mod icons;
 mod keys;
 mod location;
+mod print;
 mod profile;
 mod ui;
 

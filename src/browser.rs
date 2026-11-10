@@ -27,9 +27,11 @@ use winit::window::{CursorIcon, Fullscreen, Window};
 
 use crate::WakeUp;
 use crate::downloads::{Downloads, looks_like_download};
+use crate::find::FindState;
+use crate::print::{self, PrintJob};
 use crate::keys::keyboard_event;
 use crate::location::input_to_url;
-use crate::profile::{Profile, ThemeChoice};
+use crate::profile::{NewTabPage, Profile, ThemeChoice};
 
 pub const APP_NAME: &str = "Ferrum";
 const ZOOM_STEPS: [f32; 13] = [0.3, 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
@@ -307,6 +309,12 @@ pub struct Browser {
     pub(crate) window_fullscreen: bool,
     pub(crate) toast: Option<(String, Instant)>,
     page_theme: Option<servo::Theme>,
+    /// Hash of the look-related settings last applied to egui.
+    pub(crate) style_key: u64,
+    /// The start-page wallpaper, decoded once per path.
+    pub(crate) start_image: Option<(String, Option<egui::TextureHandle>)>,
+    pub(crate) find: FindState,
+    pub(crate) print_job: Option<print::Job>,
 
     // Page geometry (egui points) and input
     pub(crate) content_rect: egui::Rect,
@@ -355,7 +363,7 @@ impl Browser {
         servo.setup_logging();
 
         let egui = EguiGlow::new(event_loop, page_context.glow_gl_api(), None, None, false);
-        crate::ui::style(&egui.egui_ctx, profile.settings.theme);
+        crate::ui::style(&egui.egui_ctx, &profile.settings);
 
         let delegate = Rc::new(Delegate {
             window: window.clone(),
@@ -393,14 +401,17 @@ impl Browser {
             window_fullscreen: false,
             toast: None,
             page_theme: None,
+            style_key: 0,
+            start_image: None,
+            find: FindState::default(),
+            print_job: None,
             content_rect: egui::Rect::NOTHING,
             ppp: 1.0,
             mouse: None,
             modifiers: ModifiersState::empty(),
         };
 
-        let engine = browser.profile.settings.search_engine;
-        if let Some(url) = initial_url.as_deref().and_then(|u| input_to_url(u, engine)) {
+        if let Some(url) = initial_url.as_deref().and_then(|u| input_to_url(u, &browser.profile.settings)) {
             browser.open_tab(Some(url));
         } else if browser.profile.settings.restore_session && !browser.profile.is_private() {
             let (urls, active) = browser.profile.load_session();
@@ -440,16 +451,28 @@ impl Browser {
         if home.is_empty() {
             None
         } else {
-            input_to_url(home, self.profile.settings.search_engine)
+            input_to_url(home, &self.profile.settings)
         }
     }
 
+    /// Start-up tab: the home page if one is set, otherwise the start page.
     pub(crate) fn open_home_tab(&mut self) {
         let home = self.home_url();
         self.open_tab(home);
         if self.tabs[self.active].webview.is_none() {
             self.focus_location = true;
         }
+    }
+
+    /// A new tab, following the "New tabs open" setting.
+    pub(crate) fn new_tab(&mut self) {
+        let url = match self.profile.settings.new_tab_page {
+            NewTabPage::StartPage => None,
+            NewTabPage::HomePage => self.home_url(),
+            NewTabPage::Blank => Url::parse("about:blank").ok(),
+        };
+        self.open_tab(url);
+        self.focus_location = true;
     }
 
     pub(crate) fn open_tab(&mut self, url: Option<Url>) {
@@ -482,6 +505,7 @@ impl Browser {
         }
         self.editing = false;
         self.suggestion_index = None;
+        self.find.reset();
         self.sync_location();
         self.window.request_redraw();
     }
@@ -531,12 +555,13 @@ impl Browser {
     }
 
     pub(crate) fn navigate_input(&mut self, input: &str) {
-        if let Some(url) = input_to_url(input, self.profile.settings.search_engine) {
+        if let Some(url) = input_to_url(input, &self.profile.settings) {
             self.navigate(url);
         }
     }
 
     pub(crate) fn navigate(&mut self, url: Url) {
+        self.find.reset();
         self.editing = false;
         self.suggestion_index = None;
         let tab = &mut self.tabs[self.active];
@@ -686,7 +711,7 @@ impl Browser {
 
     /// Re-apply the theme to the UI and to pages (`prefers-color-scheme`).
     pub(crate) fn apply_theme(&mut self, ctx: &egui::Context) {
-        let theme = match self.profile.settings.theme {
+        let ui_theme = match self.profile.settings.theme {
             ThemeChoice::Light => servo::Theme::Light,
             ThemeChoice::Dark => servo::Theme::Dark,
             ThemeChoice::System => match ctx.theme() {
@@ -694,6 +719,8 @@ impl Browser {
                 egui::Theme::Light => servo::Theme::Light,
             },
         };
+        // Servo darkens even pages that don't support dark mode, so this is opt-in.
+        let theme = if self.profile.settings.dark_websites { ui_theme } else { servo::Theme::Light };
         if self.page_theme != Some(theme) {
             self.page_theme = Some(theme);
             for webview in self.tabs.iter().filter_map(|t| t.webview.as_ref()) {
@@ -747,6 +774,10 @@ impl Browser {
                     );
                 },
                 Event::Loaded(webview) => {
+                    if self.active_webview().is_some_and(|w| w.id() == webview.id()) {
+                        // A new document: old highlights are gone, search again if the bar is open.
+                        self.find.reset();
+                    }
                     if let Some(url) = webview.url() {
                         let title = webview.page_title();
                         self.profile.record_visit(&url, title.as_deref());
@@ -765,9 +796,42 @@ impl Browser {
                 Event::Download(url, referer) => self.start_download(url, referer),
             }
         }
+        if let Some(job) = &self.print_job {
+            print::advance(job, &self.window);
+        }
         if self.profile.needs_flush() {
             self.profile.flush(false);
         }
+    }
+
+    pub(crate) fn start_print(&mut self) {
+        if let Some(webview) = self.active_webview().cloned() {
+            let title = self.active_tab().title();
+            self.menu_open = false;
+            self.print_job = Some(PrintJob::new(webview, title));
+            self.window.request_redraw();
+        } else {
+            self.toast("Open a page to print it");
+        }
+    }
+
+    pub(crate) fn open_find(&mut self) {
+        if self.active_webview().is_some() {
+            self.find.open = true;
+            self.find.focus = true;
+            self.menu_open = false;
+        }
+    }
+
+    pub(crate) fn find_step(&mut self, delta: i32) {
+        if let Some(webview) = self.active_webview().cloned() {
+            self.find.step(&webview, &self.window, delta);
+        }
+    }
+
+    pub(crate) fn close_find(&mut self) {
+        let webview = self.active_webview().cloned();
+        self.find.close(webview.as_ref(), &self.window);
     }
 
     /// Returns false when the browser should quit.
@@ -834,10 +898,14 @@ impl Browser {
 
         match (&key.logical_key, text.as_str()) {
             (_, "t") if cmd && shift => self.reopen_closed_tab(),
-            (_, "t") if cmd => self.open_home_tab(),
+            (_, "t") if cmd => self.new_tab(),
             (_, "n") if cmd && shift => self.open_private_window(),
             (_, "w") if cmd => self.close_tab(self.active),
             (_, "l") if cmd => self.focus_location = true,
+            (_, "f") if cmd => self.open_find(),
+            (_, "g") if cmd && self.find.open => self.find_step(if shift { -1 } else { 1 }),
+            (Key::Named(NamedKey::F3), _) if self.find.open => self.find_step(if shift { -1 } else { 1 }),
+            (_, "p") if cmd => self.start_print(),
             (Key::Named(NamedKey::F6), _) => self.focus_location = true,
             (_, "r") if cmd => self.reload(),
             (Key::Named(NamedKey::F5), _) => self.reload(),
@@ -859,6 +927,8 @@ impl Browser {
                 std::process::exit(0);
             },
             (Key::Named(NamedKey::F11), _) => self.toggle_window_fullscreen(),
+            (Key::Named(NamedKey::Escape), _) if self.print_job.is_some() => self.print_job = None,
+            (Key::Named(NamedKey::Escape), _) if self.find.open => self.close_find(),
             (Key::Named(NamedKey::Escape), _) if self.page_fullscreen => {
                 if let Some(w) = self.active_webview() {
                     w.exit_fullscreen();
@@ -925,7 +995,7 @@ impl Browser {
             return;
         }
         // While a page dialog/popup or the menu is open, the page doesn't get input.
-        let blocked = self.has_popup() || self.menu_open;
+        let blocked = self.has_popup() || self.menu_open || self.print_job.is_some();
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {

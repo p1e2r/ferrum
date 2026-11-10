@@ -34,18 +34,30 @@ The `engine` folder is passed to Servo as `Opts::config_dir`, which makes cookie
 
 All files are pretty-printed JSON. Unknown or missing fields fall back to defaults (`#[serde(default)]`), so older and newer versions can read each other's files.
 
-**settings.json**
+**settings.json** (abridged)
 ```json
 {
   "search_engine": "DuckDuckGo",
-  "theme": "System",
+  "custom_search_url": "",
   "home_page": "",
+  "new_tab_page": "StartPage",
   "restore_session": true,
+  "theme": "System",
+  "dark_websites": false,
+  "accent": [222, 98, 52],
+  "ui_scale": 1.0,
+  "compact": false,
+  "roundness": 6,
+  "tab_layout": "Top",
   "show_bookmarks_bar": true,
-  "default_zoom": 1.0,
-  "ask_where_to_save": false
+  "start_title": "Ferrum",
+  "start_background": "Plain",
+  "start_image": "",
+  "start_show_clock": false
 }
 ```
+
+Look-related fields (theme, accent, size, density, rounding) are hashed by `style_key` in ui.rs; egui's style is rebuilt only when that hash changes. The start-page image is decoded once per path (and scaled down to at most 2560×1600) and kept as a texture.
 
 **bookmarks.json** — ordered list (the order is the bookmarks bar order):
 ```json
@@ -88,4 +100,4 @@ so often-visited and recently-visited pages rank first.
 
 ## Search engines
 
-`SearchEngine` lists DuckDuckGo (default), Google, Bing, Brave Search, Startpage and Ecosia. `search_url(query)` builds the URL; `location::input_to_url` uses it when the address-bar text isn't a URL.
+`SearchEngine` lists DuckDuckGo (default), Google, Bing, Brave Search, Startpage, Ecosia and Custom (a URL template with `%s`, from `custom_search_url`). `Settings::search_url(query)` builds the URL; `location::input_to_url` uses it when the address-bar text isn't a URL.
