@@ -1,0 +1,42 @@
+[package]
+name = "ferrum"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "A fast, native web browser written in Rust: Servo engine with a natively drawn interface."
+repository = "https://github.com/p1e2r/ferrum"
+readme = "README.md"
+keywords = ["browser", "servo", "web", "egui"]
+categories = ["gui", "web-programming"]
+
+[dependencies]
+servo = "0.8.0"
+winit = "0.30.13"
+egui = "0.34.3"
+egui-winit = { version = "0.34.3", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }
+egui_glow = { version = "0.34.3", features = ["winit"] }
+glow = "0.17.0"
+euclid = "0.22"
+dpi = "0.1"
+url = "2.5"
+keyboard-types = "0.8.3"
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws-lc-rs"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+rfd = "0.15"
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+strip = "debuginfo"
+
+[profile.dev]
+# Servo is very slow unoptimised; optimise dependencies even in debug builds.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
