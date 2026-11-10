@@ -36,7 +36,8 @@ jobs:
             dir="builds/$short"
             mkdir -p "$dir"
             gh run download "$run" -R "$REPO" -D "$dir" || true
-            mapfile -t files < <(find "$dir" -type f | sort)
+            # Only packaged downloads, not the contents of the unpacked Ferrum.app.
+            mapfile -t files < <(find "$dir" -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' \) -not -path '*.app/*' | sort)
             if [ "${#files[@]}" -eq 0 ]; then
               echo "No builds to publish for $short"
               continue

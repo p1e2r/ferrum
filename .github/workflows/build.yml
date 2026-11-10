@@ -90,47 +90,51 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ferrum-${{ matrix.name }}
-          path: dist/*
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.tar.gz
 
-  # Every push to main → a "Nightly" pre-release (replaced each time).
-  # A version tag (v0.2.0, …) → a pre-release named after the version.
-  # All releases are marked pre-release until Ferrum is ready for production.
+  # Until Ferrum is ready for production, EVERY build is published as a
+  # nightly pre-release:
+  #   push to main → "nightly-<commit>" (kept) + "Nightly" (rolling, replaced)
+  #   version tag  → that version, also as a pre-release
   release:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: build
     runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Remove the previous nightly
+      - name: Publish this commit as a nightly
         if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release delete nightly --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+        run: |
+          short="${GITHUB_SHA:0:7}"
+          gh release delete "nightly-$short" --cleanup-tag --yes -R "$REPO" || true
+          gh release create "nightly-$short" dist/* -R "$REPO" \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Nightly ($short)" \
+            --notes "Nightly build of commit $GITHUB_SHA — not a stable release, may contain bugs."
 
-      - name: Publish nightly pre-release
+      - name: Update the rolling Nightly
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: nightly
-          target_commitish: ${{ github.sha }}
-          name: Nightly (${{ github.sha }})
-          prerelease: true
-          make_latest: false
-          body: |
-            Automatic build of the latest commit on `main` — not a stable release, may contain bugs.
+        run: |
+          short="${GITHUB_SHA:0:7}"
+          gh release delete nightly --cleanup-tag --yes -R "$REPO" || true
+          gh release create nightly dist/* -R "$REPO" \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Nightly (latest: $short)" \
+            --notes "Always the newest build of main ($GITHUB_SHA) — not a stable release, may contain bugs."
 
-            Commit: ${{ github.sha }}
-          files: dist/*
-
-      - name: Publish version pre-release
+      - name: Publish version as a pre-release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: true
-          make_latest: false
-          files: dist/*
-          generate_release_notes: true
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* -R "$REPO" \
+            --verify-tag --prerelease --latest=false --generate-notes \
+            --title "$GITHUB_REF_NAME (pre-release)"
