@@ -65,10 +65,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-if [[ -f assets/Ferrum.icns ]]; then
-  cp assets/Ferrum.icns "$APP/Contents/Resources/"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string Ferrum.icns" "$APP/Contents/Info.plist"
-fi
+echo "==> App icon"
+ICONSET=$(mktemp -d)/Ferrum.iconset
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z $size $size assets/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  sips -z $((size * 2)) $((size * 2)) assets/icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Ferrum.icns"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string Ferrum.icns" "$APP/Contents/Info.plist"
 
 echo "==> Signing (ad-hoc; set SIGN_IDENTITY to sign with a Developer ID)"
 # The entitlements let SpiderMonkey's JIT allocate executable memory under the

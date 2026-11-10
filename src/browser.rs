@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use egui_glow::EguiGlow;
@@ -243,11 +244,16 @@ pub struct Tab {
     pub zoom: f32,
     pub favicon: Option<egui::TextureHandle>,
     pub favicon_dirty: bool,
+    /// Set when Ferrum turned a typed host into an https:// URL, so a failed
+    /// connection can fall back to http:// for sites without HTTPS.
+    pub upgraded_to_https: bool,
+    /// Automatic retries left for the current navigation.
+    pub retries_left: u8,
 }
 
 impl Tab {
     fn new(webview: Option<WebView>, zoom: f32) -> Self {
-        Self { webview, crashed: None, zoom, favicon: None, favicon_dirty: false }
+        Self { webview, crashed: None, zoom, favicon: None, favicon_dirty: false, upgraded_to_https: false, retries_left: 1 }
     }
 
     pub fn title(&self) -> String {
@@ -299,6 +305,9 @@ pub struct Browser {
     pub(crate) editing: bool,
     pub(crate) focus_location: bool,
     pub(crate) suggestion_index: Option<usize>,
+    /// Where the suggestion list was last drawn, so clicks on it still count
+    /// after the address bar loses focus.
+    pub(crate) suggestion_rect: egui::Rect,
     pub(crate) start_query: String,
 
     // Chrome state
@@ -315,6 +324,9 @@ pub struct Browser {
     pub(crate) start_image: Option<(String, Option<egui::TextureHandle>)>,
     pub(crate) find: FindState,
     pub(crate) print_job: Option<print::Job>,
+    /// When the interface next needs a repaint (set by egui's repaint callback).
+    repaint_at: Arc<Mutex<Option<Instant>>>,
+    last_title: String,
 
     // Page geometry (egui points) and input
     pub(crate) content_rect: egui::Rect,
@@ -339,6 +351,15 @@ impl Browser {
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 840.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 320.0));
         let window = Rc::new(event_loop.create_window(attributes).expect("create window"));
+        // Window/taskbar icon on Windows and Linux (macOS uses the app bundle's icon).
+        #[cfg(not(target_os = "macos"))]
+        {
+            if let Ok(img) = image::load_from_memory(include_bytes!("../assets/icon-256.png")) {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                window.set_window_icon(winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok());
+            }
+        }
 
         let display_handle = event_loop.display_handle().expect("display handle");
         let window_handle = window.window_handle().expect("window handle");
@@ -359,11 +380,43 @@ impl Browser {
             },
             None => opts.temporary_storage = true,
         }
-        let servo = ServoBuilder::default().opts(opts).event_loop_waker(waker).build();
+        // WebGL 2 is off in Servo's defaults, but current three.js and most 3D
+        // sites require it.
+        let mut preferences = servo::Preferences::default();
+        preferences.dom_webgl2_enabled = true;
+        // Servo disables "happy eyeballs" and splits this timeout across every
+        // address a host resolves to; a longer budget avoids spurious
+        // "client error (Connect)" on networks with slow or broken IPv6.
+        preferences.network_connection_timeout = 30;
+        let servo = ServoBuilder::default()
+            .opts(opts)
+            .preferences(preferences)
+            .event_loop_waker(waker)
+            .build();
         servo.setup_logging();
 
         let egui = EguiGlow::new(event_loop, page_context.glow_gl_api(), None, None, false);
         crate::ui::style(&egui.egui_ctx, &profile.settings);
+
+        // egui tells us *when* it next needs to repaint (now, or after a delay for
+        // tooltips, animations, the clock…). We record the earliest time and let the
+        // event loop sleep until then, instead of redrawing continuously.
+        let repaint_at: Arc<Mutex<Option<Instant>>> = Arc::default();
+        {
+            let repaint_at = repaint_at.clone();
+            let proxy = proxy.clone();
+            egui.egui_ctx.set_request_repaint_callback(move |info| {
+                let at = Instant::now() + info.delay;
+                if let Ok(mut slot) = repaint_at.lock() {
+                    if slot.is_none_or(|current| at < current) {
+                        *slot = Some(at);
+                    }
+                }
+                if info.delay.is_zero() {
+                    let _ = proxy.send_event(WakeUp);
+                }
+            });
+        }
 
         let delegate = Rc::new(Delegate {
             window: window.clone(),
@@ -393,6 +446,7 @@ impl Browser {
             editing: false,
             focus_location: false,
             suggestion_index: None,
+            suggestion_rect: egui::Rect::NOTHING,
             start_query: String::new(),
             panel: SidePanel::None,
             menu_open: false,
@@ -405,6 +459,8 @@ impl Browser {
             start_image: None,
             find: FindState::default(),
             print_job: None,
+            repaint_at,
+            last_title: String::new(),
             content_rect: egui::Rect::NOTHING,
             ppp: 1.0,
             mouse: None,
@@ -507,6 +563,7 @@ impl Browser {
         self.suggestion_index = None;
         self.find.reset();
         self.sync_location();
+        self.profile.mark_dirty();
         self.window.request_redraw();
     }
 
@@ -536,6 +593,29 @@ impl Browser {
         self.activate(next);
     }
 
+    /// Remove a tab without re-activating (used when closing several at once).
+    pub(crate) fn close_tab_quietly(&mut self, index: usize) {
+        if index >= self.tabs.len() || self.tabs.len() == 1 {
+            return;
+        }
+        let tab = self.tabs.remove(index);
+        if let Some(url) = tab.url() {
+            self.closed_tabs.push(url.to_string());
+        }
+        if let Some(webview) = &tab.webview {
+            self.controls.retain(|c| c.webview != webview.id());
+        }
+        if self.active >= self.tabs.len() || index < self.active {
+            self.active = self.active.saturating_sub(1);
+        }
+    }
+
+    pub(crate) fn insert_tab_after(&mut self, index: usize, webview: WebView, zoom: f32) {
+        webview.set_page_zoom(zoom);
+        self.tabs.insert(index + 1, Tab::new(Some(webview), zoom));
+        self.activate(index + 1);
+    }
+
     fn reopen_closed_tab(&mut self) {
         if let Some(url) = self.closed_tabs.pop().and_then(|u| Url::parse(&u).ok()) {
             self.open_tab(Some(url));
@@ -556,7 +636,9 @@ impl Browser {
 
     pub(crate) fn navigate_input(&mut self, input: &str) {
         if let Some(url) = input_to_url(input, &self.profile.settings) {
+            let upgraded = url.scheme() == "https" && !input.trim().to_ascii_lowercase().starts_with("https://");
             self.navigate(url);
+            self.tabs[self.active].upgraded_to_https = upgraded;
         }
     }
 
@@ -566,6 +648,8 @@ impl Browser {
         self.suggestion_index = None;
         let tab = &mut self.tabs[self.active];
         tab.crashed = None;
+        tab.upgraded_to_https = false;
+        tab.retries_left = 1;
         match &tab.webview {
             Some(webview) => webview.load(url),
             None => {
@@ -774,6 +858,10 @@ impl Browser {
                     );
                 },
                 Event::Loaded(webview) => {
+                    if self.recover_failed_load(&webview) {
+                        continue;
+                    }
+                    self.profile.mark_dirty();
                     if self.active_webview().is_some_and(|w| w.id() == webview.id()) {
                         // A new document: old highlights are gone, search again if the bar is open.
                         self.find.reset();
@@ -799,9 +887,37 @@ impl Browser {
         if let Some(job) = &self.print_job {
             print::advance(job, &self.window);
         }
-        if self.profile.needs_flush() {
-            self.profile.flush(false);
+        self.save_if_due();
+    }
+
+    /// Servo shows a plain "Error loading page" document when it can't connect.
+    /// Fall back from an automatic https:// upgrade to http://, or retry once,
+    /// before leaving the error showing. Returns true if a new load was started.
+    fn recover_failed_load(&mut self, webview: &WebView) -> bool {
+        let Some(i) = self.tab_index(webview.id()) else { return false };
+        let failed = webview.page_title().as_deref() == Some("Error loading page");
+        let tab = &mut self.tabs[i];
+        if !failed {
+            tab.retries_left = 1;
+            return false;
         }
+        let Some(url) = webview.url() else { return false };
+        if tab.upgraded_to_https && url.scheme() == "https" {
+            tab.upgraded_to_https = false;
+            let mut http = url.clone();
+            if http.set_scheme("http").is_ok() {
+                log::info!("HTTPS connection to {url} failed; trying {http}");
+                webview.load(http);
+                return true;
+            }
+        }
+        if tab.retries_left > 0 {
+            tab.retries_left -= 1;
+            log::info!("Loading {url} failed; retrying once");
+            webview.load(url);
+            return true;
+        }
+        false
     }
 
     pub(crate) fn start_print(&mut self) {
@@ -1100,6 +1216,9 @@ impl Browser {
         self.page_context.make_current().expect("make GL context current");
 
         let Some(mut egui) = self.egui.take() else { return };
+        if let Ok(mut slot) = self.repaint_at.lock() {
+            *slot = None;
+        }
         let window = self.window.clone();
         egui.run(&window, |ui| self.draw(ui));
 
@@ -1108,10 +1227,10 @@ impl Browser {
             None => APP_NAME.to_string(),
         };
         let title = if self.profile.is_private() { format!("{title} (Private)") } else { title };
-        self.window.set_title(&title);
-
-        if egui.egui_ctx.has_requested_repaint() {
-            self.window.request_redraw();
+        // Setting the title is surprisingly expensive on macOS; only do it when it changes.
+        if title != self.last_title {
+            self.window.set_title(&title);
+            self.last_title = title;
         }
 
         self.page_context.make_current().expect("make GL context current");
@@ -1119,6 +1238,36 @@ impl Browser {
         egui.paint(&self.window);
         self.window_context.present();
         self.egui = Some(egui);
+    }
+
+    /// Write the profile and session once changes have settled. Saving the session
+    /// together with the profile means tabs survive even an abrupt quit (Cmd+Q from
+    /// the macOS menu bar, or a crash).
+    pub fn save_if_due(&mut self) {
+        if self.profile.flush_due() {
+            self.save_session();
+            self.profile.flush(true);
+        }
+    }
+
+    /// When the event loop must wake up next: a scheduled repaint or a pending save.
+    pub fn next_wake(&mut self) -> Option<Instant> {
+        self.save_if_due();
+        [self.next_repaint(), self.profile.flush_at()].into_iter().flatten().min()
+    }
+
+    /// Called when the event loop is about to sleep: redraw now if a repaint is
+    /// due, otherwise return when the next one is (so the loop can wake for it).
+    pub fn next_repaint(&self) -> Option<Instant> {
+        let mut slot = self.repaint_at.lock().ok()?;
+        let at = (*slot)?;
+        if at <= Instant::now() {
+            *slot = None;
+            self.window.request_redraw();
+            None
+        } else {
+            Some(at)
+        }
     }
 
     pub(crate) fn mouse_physical(&self) -> Option<(f32, f32)> {

@@ -27,7 +27,7 @@ enum Event {
 | Callback | What Ferrum does |
 |---|---|
 | `notify_new_frame_ready`, `notify_url_changed`, `notify_status_text_changed`, `notify_history_changed` | redraw |
-| `notify_load_status_changed` | redraw; on `Complete` record a history visit |
+| `notify_load_status_changed` | redraw; on `Complete` record a history visit, or recover a failed load (below) |
 | `notify_page_title_changed` | update the history entry's title |
 | `notify_favicon_changed` | mark the tab's favicon for re-upload |
 | `notify_cursor_changed` | set the window cursor (active tab only) |
@@ -77,3 +77,16 @@ Each frame the control is drawn and produces a `ControlOutcome` (`Keep`, `Confir
 ### Input methods
 
 `EmbedderControl::InputMethod` (on-screen keyboard requests) is ignored on desktop.
+
+## Failed loads
+
+When Servo can't connect it loads its own error document (title "Error loading page", text "Could not load the requested page: …"). On `Complete`, `Browser::recover_failed_load` checks for that title and:
+
+1. if Ferrum itself upgraded a typed host to `https://` (`Tab::upgraded_to_https`), loads the `http://` version instead — for sites and home servers without HTTPS;
+2. otherwise retries once (`Tab::retries_left`), which covers brief network hiccups.
+
+Servo disables "happy eyeballs" and splits `network_connection_timeout` across every address a host resolves to, so Ferrum raises that preference from 15 to 30 seconds to avoid spurious connect errors on networks with slow or broken IPv6.
+
+## Engine features and preferences
+
+`Cargo.toml` enables Servo's `webgl`, `subtlecrypto` and `brotli-compression-stream` features, which aren't in Servo's defaults. `Browser::new` also sets `dom_webgl2_enabled = true` (current three.js needs WebGL 2) and the longer connection timeout.

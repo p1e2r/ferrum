@@ -20,6 +20,8 @@ pub enum Icon {
     Download,
     Up,
     Down,
+    Warning,
+    History,
 }
 
 /// A square icon button. Returns the click response.
@@ -46,6 +48,13 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, size: f32, enabled: bool, tooltip: &
     }
 
     response.on_hover_text(tooltip)
+}
+
+/// A non-interactive icon of `size`, for use inside rows and labels.
+pub fn icon(ui: &mut Ui, icon: Icon, size: f32, color: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    paint_icon(ui, icon, rect.shrink(size * 0.15), color);
+    response
 }
 
 fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
@@ -123,6 +132,18 @@ fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
             let tip = pos2(c.x, c.y + d * h * 0.28);
             p.line_segment([pos2(r.left() + w * 0.1, c.y - d * h * 0.22), tip], s);
             p.line_segment([tip, pos2(r.right() - w * 0.1, c.y - d * h * 0.22)], s);
+        },
+        Icon::Warning => {
+            let tri = vec![pos2(c.x, r.top()), pos2(r.right(), r.bottom()), pos2(r.left(), r.bottom())];
+            p.add(Shape::convex_polygon(tri, color, Stroke::NONE));
+            let ink = Color32::WHITE;
+            p.line_segment([pos2(c.x, r.top() + h * 0.35), pos2(c.x, r.bottom() - h * 0.32)], Stroke::new(1.6_f32, ink));
+            p.circle_filled(pos2(c.x, r.bottom() - h * 0.14), 1.0, ink);
+        },
+        Icon::History => {
+            p.circle_stroke(c, w * 0.5, s);
+            p.line_segment([c, pos2(c.x, c.y - h * 0.3)], s);
+            p.line_segment([c, pos2(c.x + w * 0.24, c.y + h * 0.1)], s);
         },
         Icon::Home => {
             let roof = [

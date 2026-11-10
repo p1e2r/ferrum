@@ -26,7 +26,7 @@ use std::error::Error;
 
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
 use crate::browser::Browser;
@@ -92,6 +92,16 @@ impl ApplicationHandler<WakeUp> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: WakeUp) {
         if let App::Running(browser) = self {
             browser.pump();
+        }
+    }
+
+    /// Sleep until there is input, a wake-up from another thread, or the next
+    /// scheduled interface repaint — never spin.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let App::Running(browser) = self else { return };
+        match browser.next_wake() {
+            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 

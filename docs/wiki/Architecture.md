@@ -41,12 +41,14 @@ On `WakeUp`, `App::user_event` calls `Browser::pump`, which:
 
 ## The life of a frame
 
-Nothing redraws on a timer. A redraw happens when something calls `window.request_redraw()`:
+Nothing redraws on a timer, and Ferrum never spins. A redraw happens when something calls `window.request_redraw()`, or when a repaint egui scheduled for later falls due:
 
 - Servo has a new page frame (`notify_new_frame_ready`) or page state changed (title, URL, load status…),
 - egui needs a repaint (hover effects, animations, typing),
 - the progress bar or toast is animating (they request repaints at ~30 fps only while visible),
 - a download made progress (throttled to 4 updates a second).
+
+**Scheduled repaints.** egui often asks for a repaint *later* (a tooltip after its delay, the start-page clock at the next minute). Ferrum registers `set_request_repaint_callback`, which records the earliest requested time in `repaint_at`. When winit is about to sleep, `App::about_to_wait` calls `Browser::next_wake`, which redraws if that time has passed and otherwise sets `ControlFlow::WaitUntil` for it (or for the next pending profile save). Don't use `Context::has_requested_repaint()` to trigger redraws: it is also true for *delayed* repaints, and acting on it immediately makes the browser redraw continuously.
 
 `WindowEvent::RedrawRequested` → `Browser::redraw`:
 

@@ -18,7 +18,7 @@ use url::Url;
 
 use crate::browser::{APP_NAME, Browser, PageControl, SidePanel};
 use crate::downloads::{Status, human_size, open_path};
-use crate::icons::{Icon, icon_button};
+use crate::icons::{Icon, icon, icon_button};
 use crate::profile::{DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, ThemeChoice};
 
 pub fn accent(settings: &Settings) -> Color32 {
@@ -102,6 +102,36 @@ fn letter_icon(ui: &mut Ui, label: &str, seed: &str, size: f32) {
     let fill: Color32 = egui::ecolor::Hsva::new(hue, 0.45, 0.75, 1.0).into();
     ui.painter().rect_filled(rect, size * 0.25, fill);
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, letter, FontId::proportional(size * 0.6), Color32::WHITE);
+}
+
+#[derive(Clone, Copy)]
+enum TabAction {
+    Reload,
+    Duplicate,
+    Bookmark,
+    Close,
+    CloseOthers,
+    CloseRight,
+}
+
+/// Right-click menu shared by both tab layouts.
+fn tab_menu(resp: &egui::Response, index: usize, count: usize, out: &mut Option<(usize, TabAction)>) {
+    resp.context_menu(|ui| {
+        ui.set_min_width(180.0);
+        let mut item = |ui: &mut Ui, label: &str, action: TabAction, enabled: bool| {
+            if ui.add_enabled(enabled, egui::Button::new(label).frame(false)).clicked() {
+                *out = Some((index, action));
+                ui.close();
+            }
+        };
+        item(ui, "Reload", TabAction::Reload, true);
+        item(ui, "Duplicate", TabAction::Duplicate, true);
+        item(ui, "Bookmark", TabAction::Bookmark, true);
+        ui.separator();
+        item(ui, "Close tab", TabAction::Close, true);
+        item(ui, "Close other tabs", TabAction::CloseOthers, count > 1);
+        item(ui, "Close tabs to the right", TabAction::CloseRight, index + 1 < count);
+    });
 }
 
 enum ControlOutcome {
@@ -306,8 +336,13 @@ impl Browser {
                                 act = Act::Open;
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let print = egui::Button::new(RichText::new("Print").color(Color32::WHITE)).fill(accent);
-                                if ui.add_enabled(!j.printers.is_empty(), print).clicked() {
+                                let can_print = !j.printers.is_empty();
+                                let print = if can_print {
+                                    egui::Button::new(RichText::new("Print").color(Color32::WHITE)).fill(accent)
+                                } else {
+                                    egui::Button::new("Print")
+                                };
+                                if ui.add_enabled(can_print, print).clicked() {
                                     act = Act::Print;
                                 }
                                 if ui.button("Cancel").clicked() {
@@ -367,6 +402,8 @@ impl Browser {
         let mut select = None;
         let mut close = None;
         let mut new_tab = false;
+        let mut tab_action: Option<(usize, TabAction)> = None;
+        let count = self.tabs.len();
         let accent = self.accent();
         let private = self.profile.is_private();
         egui::Panel::left("vertical_tabs")
@@ -385,6 +422,7 @@ impl Browser {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     for (i, tab) in self.tabs.iter().enumerate() {
                         let selected = i == self.active;
+                        let mut close_rect: Option<egui::Rect> = None;
                         let frame = Frame::new()
                             .fill(if selected { ui.visuals().extreme_bg_color } else { Color32::TRANSPARENT })
                             .stroke(if selected { egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.5)) } else { egui::Stroke::NONE })
@@ -397,15 +435,16 @@ impl Browser {
                                 let text = RichText::new(tab.title()).size(13.0);
                                 ui.add(egui::Label::new(if selected { text.strong() } else { text }).truncate().selectable(false));
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if icon_button(ui, Icon::Close, 18.0, true, "Close tab").clicked() {
-                                        close = Some(i);
-                                    }
+                                    close_rect = Some(icon_button(ui, Icon::Close, 18.0, true, "Close tab").rect);
                                 });
                             });
                         });
                         let resp = ui.interact(resp.response.rect, Id::new(("vtab", i)), Sense::click()).on_hover_text(tab.title());
+                        tab_menu(&resp, i, count, &mut tab_action);
+                        // The whole-tab click area sits on top of the ✕, so tell them apart by position.
                         if resp.clicked() {
-                            select = Some(i);
+                            let on_close = close_rect.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
+                            if on_close { close = Some(i) } else { select = Some(i) }
                         }
                         if resp.middle_clicked() {
                             close = Some(i);
@@ -413,7 +452,9 @@ impl Browser {
                     }
                 });
             });
-        if let Some(i) = close {
+        if let Some((i, action)) = tab_action {
+            self.tab_action(i, action);
+        } else if let Some(i) = close {
             self.close_tab(i);
         } else if let Some(i) = select {
             self.activate(i);
@@ -423,10 +464,53 @@ impl Browser {
         }
     }
 
+    fn tab_action(&mut self, i: usize, action: TabAction) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        match action {
+            TabAction::Reload => {
+                self.activate(i);
+                self.reload();
+            },
+            TabAction::Duplicate => {
+                if let Some(url) = self.tabs[i].url() {
+                    let webview = self.create_webview(url);
+                    let zoom = self.tabs[i].zoom;
+                    self.insert_tab_after(i, webview, zoom);
+                }
+            },
+            TabAction::Bookmark => {
+                if let Some(url) = self.tabs[i].url() {
+                    let title = self.tabs[i].title();
+                    if !self.profile.is_bookmarked(url.as_str()) {
+                        self.profile.toggle_bookmark(url.as_str(), &title);
+                    }
+                    self.toast("Bookmarked");
+                }
+            },
+            TabAction::Close => self.close_tab(i),
+            TabAction::CloseOthers => {
+                for j in (0..self.tabs.len()).rev() {
+                    if j != i {
+                        self.close_tab_quietly(j);
+                    }
+                }
+                self.activate(0);
+            },
+            TabAction::CloseRight => {
+                for j in (i + 1..self.tabs.len()).rev() {
+                    self.close_tab_quietly(j);
+                }
+                self.activate(self.active.min(i));
+            },
+        }
+    }
+
     /// Favicon, spinner, crash marker or letter tile for a tab.
     fn tab_icon(&self, ui: &mut Ui, tab: &crate::browser::Tab) {
         if tab.crashed.is_some() {
-            ui.label(RichText::new("⚠").color(Color32::from_rgb(220, 60, 60)));
+            icon(ui, Icon::Warning, 16.0, Color32::from_rgb(220, 60, 60));
         } else if tab.loading() {
             ui.add(egui::Spinner::new().size(14.0).color(self.accent()));
         } else if let Some(icon) = &tab.favicon {
@@ -443,6 +527,8 @@ impl Browser {
         let mut select = None;
         let mut close = None;
         let mut new_tab = false;
+        let mut tab_action: Option<(usize, TabAction)> = None;
+        let count = self.tabs.len();
         let fill = ui.visuals().panel_fill;
         let tab_fill = ui.visuals().extreme_bg_color;
         let private = self.profile.is_private();
@@ -465,6 +551,7 @@ impl Browser {
                             ui.horizontal(|ui| {
                                 for (i, tab) in self.tabs.iter().enumerate() {
                                     let selected = i == self.active;
+                                    let mut close_rect: Option<egui::Rect> = None;
                                     let frame = Frame::new()
                                         .fill(if selected { tab_fill } else { Color32::TRANSPARENT })
                                         .corner_radius(CornerRadius { nw: self.profile.settings.roundness + 2, ne: self.profile.settings.roundness + 2, sw: 0, se: 0 })
@@ -479,17 +566,18 @@ impl Browser {
                                             ui.add(egui::Label::new(text).truncate().selectable(false));
                                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                                 if width > 90.0 || selected {
-                                                    if icon_button(ui, Icon::Close, 18.0, true, "Close tab (Ctrl+W)").clicked() {
-                                                        close = Some(i);
-                                                    }
+                                                    close_rect = Some(icon_button(ui, Icon::Close, 18.0, true, "Close tab (Ctrl+W)").rect);
                                                 }
                                             });
                                         });
                                     });
                                     let resp = ui.interact(resp.response.rect, Id::new(("tab", i)), Sense::click());
                                     let resp = resp.on_hover_text(tab.title());
+                                    tab_menu(&resp, i, count, &mut tab_action);
+                                    // The whole-tab click area sits on top of the ✕, so tell them apart by position.
                                     if resp.clicked() {
-                                        select = Some(i);
+                                        let on_close = close_rect.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
+                                        if on_close { close = Some(i) } else { select = Some(i) }
                                     }
                                     if resp.middle_clicked() {
                                         close = Some(i);
@@ -503,7 +591,9 @@ impl Browser {
                 });
             });
 
-        if let Some(i) = close {
+        if let Some((i, action)) = tab_action {
+            self.tab_action(i, action);
+        } else if let Some(i) = close {
             self.close_tab(i);
         } else if let Some(i) = select {
             self.activate(i);
@@ -646,8 +736,14 @@ impl Browser {
             ui.ctx().request_repaint_after(Duration::from_millis(33));
         }
 
-        if url_focused && self.editing {
+        let pointer_on_list = ui.ctx().input(|i| {
+            i.pointer.interact_pos().is_some_and(|p| self.suggestion_rect.contains(p))
+                && (i.pointer.any_down() || i.pointer.any_released())
+        });
+        if self.editing && (url_focused || pointer_on_list) {
             self.draw_suggestions(ui.ctx(), url_rect);
+        } else {
+            self.suggestion_rect = egui::Rect::NOTHING;
         }
     }
 
@@ -666,7 +762,7 @@ impl Browser {
             }
         });
         let mut chosen = None;
-        egui::Area::new(Id::new("suggestions"))
+        let area = egui::Area::new(Id::new("suggestions"))
             .order(egui::Order::Foreground)
             .fixed_pos(url_rect.left_bottom() + vec2(0.0, 4.0))
             .show(ctx, |ui| {
@@ -678,9 +774,9 @@ impl Browser {
                             .horizontal(|ui| {
                                 ui.set_min_height(26.0);
                                 if *bookmark {
-                                    ui.label(RichText::new("★").color(Color32::from_rgb(232, 160, 32)));
+                                    icon(ui, Icon::StarFilled, 16.0, Color32::from_rgb(232, 160, 32));
                                 } else {
-                                    ui.label(RichText::new("↺").weak());
+                                    icon(ui, Icon::History, 16.0, ui.visuals().weak_text_color());
                                 }
                                 if !title.is_empty() {
                                     ui.label(truncate(title, 60));
@@ -699,6 +795,7 @@ impl Browser {
                     }
                 });
             });
+        self.suggestion_rect = area.response.rect;
         if let Some(url) = chosen {
             self.navigate_input(&url);
         }
@@ -710,11 +807,23 @@ impl Browser {
             .frame(Frame::new().fill(ui.visuals().extreme_bg_color).inner_margin(Margin { left: 8, right: 8, top: 0, bottom: 4 }))
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     for b in &self.profile.bookmarks {
                         let resp = ui
-                            .add(egui::Button::new(RichText::new(truncate(&b.title, 22)).size(12.0)).frame(false))
+                            .scope(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                let inner = ui.horizontal(|ui| {
+                                    letter_icon(ui, &b.title, &b.url, 14.0);
+                                    ui.add(egui::Label::new(RichText::new(truncate(&b.title, 22)).size(12.0)).selectable(false));
+                                });
+                                ui.interact(inner.response.rect.expand(3.0), Id::new(("bm", &b.url)), Sense::click())
+                            })
+                            .inner
                             .on_hover_text(&b.url);
+                        if resp.hovered() {
+                            ui.painter().rect_filled(resp.rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
+                        }
+                        ui.add_space(6.0);
                         if resp.clicked() {
                             open = Some((b.url.clone(), false));
                         }
@@ -1419,7 +1528,11 @@ impl Browser {
             let r = resp.rect;
             let close = egui::Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), Vec2::splat(20.0));
             let c = ui.interact(close, Id::new(("row-x", r.min.x as i32, r.min.y as i32)), Sense::click());
-            ui.painter().text(close.center(), Align2::CENTER_CENTER, "✕", FontId::proportional(12.0), ui.visuals().weak_text_color());
+            let color = if c.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
+            let d = vec2(4.0, 4.0);
+            let k = close.center();
+            ui.painter().line_segment([k - d, k + d], egui::Stroke::new(1.5_f32, color));
+            ui.painter().line_segment([k + vec2(-d.x, d.y), k + vec2(d.x, -d.y)], egui::Stroke::new(1.5_f32, color));
             remove = c.clicked();
         }
         (resp.clicked() && !remove, resp.middle_clicked(), remove)
@@ -1475,7 +1588,7 @@ impl Browser {
 
     fn draw_bookmarks(&mut self, ui: &mut Ui) {
         if let Some(url) = self.active_tab().url() {
-            if !self.profile.is_bookmarked(url.as_str()) && ui.button("★  Bookmark this page").clicked() {
+            if !self.profile.is_bookmarked(url.as_str()) && ui.button("Bookmark this page").clicked() {
                 self.toggle_bookmark();
             }
         }

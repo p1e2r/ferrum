@@ -10,7 +10,9 @@ keywords = ["browser", "servo", "web", "egui"]
 categories = ["gui", "web-programming"]
 
 [dependencies]
-servo = "0.8.0"
+# WebGL (three.js and other 3D), crypto.subtle (many sign-ins) and Brotli
+# streams aren't in Servo's default feature set, so they're enabled here.
+servo = { version = "0.8.0", features = ["webgl", "subtlecrypto", "brotli-compression-stream"] }
 winit = "0.30.13"
 egui = "0.34.3"
 egui-winit = { version = "0.34.3", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }

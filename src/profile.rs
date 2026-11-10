@@ -303,8 +303,14 @@ impl Profile {
         write_json(&dir.join("history.json"), &self.history);
     }
 
-    pub fn needs_flush(&self) -> bool {
-        self.dirty_since.is_some()
+    /// When pending changes should be written, if there are any.
+    pub fn flush_at(&self) -> Option<Instant> {
+        self.dirty_since.map(|t| t + SAVE_DELAY)
+    }
+
+    /// True when changes have waited long enough to be written.
+    pub fn flush_due(&self) -> bool {
+        self.dirty_since.is_some_and(|t| t.elapsed() >= SAVE_DELAY)
     }
 
     // ----- session -----

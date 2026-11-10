@@ -52,12 +52,23 @@ Cross-compiles `x86_64-pc-windows-msvc` with [cargo-xwin](https://github.com/rus
 
 On every push to `main` and every pull request, GitHub Actions builds and tests natively on Linux x86_64, Linux arm64, macOS (universal, via `build-macos.sh`) and Windows x86_64, and uploads each package as a workflow artifact.
 
-Pushing a version tag publishes a release with all packages attached:
+### Releases
+
+Every release is a **pre-release** until Ferrum is ready for production:
+
+- **Every push to `main`** replaces the **Nightly** pre-release (tag `nightly`) with fresh builds for all platforms.
+- **Pushing a version tag** publishes a pre-release for that version:
 
 ```sh
 git tag v0.2.0
 git push origin v0.2.0
 ```
+
+Pull requests are built and tested but publish nothing.
+
+### macOS signing and the JIT
+
+`build-macos.sh` signs with the hardened runtime and `assets/Ferrum.entitlements`. The entitlements `com.apple.security.cs.allow-jit` and `allow-unsigned-executable-memory` are required: without them SpiderMonkey can't allocate executable memory for its JIT, `JSEngine::init` fails with `InitFailed`, and Ferrum crashes at launch. The app icon is generated from `assets/icon.png` with `sips` and `iconutil`.
 
 ## Tests
 

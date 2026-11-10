@@ -1,3 +1,5 @@
+<img src="assets/icon-256.png" width="96" align="right" alt="Ferrum icon">
+
 # Ferrum
 
 A fast, native desktop web browser written in Rust.
@@ -11,7 +13,8 @@ A fast, native desktop web browser written in Rust.
 
 | | |
 |---|---|
-| Browsing | Tabs (with favicons, middle-click close), back/forward, reload, home, address bar that searches or navigates |
+| Browsing | Tabs (favicons, middle-click close, right-click: reload, duplicate, close others / to the right), back/forward, reload, home, address bar that searches or navigates; automatic retry and HTTPS→HTTP fallback when a site won't connect |
+| 3D and web features | WebGL and WebGL 2 (three.js etc.), `crypto.subtle`, Brotli |
 | Address bar | Suggestions from bookmarks and history (↑/↓ to pick), selects all on click, choice of 6 search engines |
 | Bookmarks | Star button / Ctrl+D, bookmarks bar, bookmarks panel with reordering, start-page tiles |
 | History | Searchable history panel (fast even with thousands of entries), frequently-visited tiles, clear history |
@@ -29,7 +32,7 @@ A fast, native desktop web browser written in Rust.
 
 ### Efficiency
 
-- Draws only when something changes (no constant redraw loop); background tabs are hidden so Servo throttles them.
+- Draws only when something changes, and sleeps until the next scheduled repaint — no busy redraw loop; background tabs are hidden so Servo throttles them.
 - Profile data is batched and written atomically a couple of seconds after changes, never on the UI's critical path.
 - Downloads stream straight to disk on their own threads.
 - History and bookmark lists only lay out the rows on screen.
@@ -47,7 +50,7 @@ Light browsing works on old hardware; heavy web apps and video sites need more. 
 
 ## Download
 
-Pre-built binaries for every platform are produced by [GitHub Actions](../../actions) on each push, and attached to [Releases](../../releases) for tagged versions.
+Every push to `main` publishes a **Nightly** pre-release with builds for macOS, Windows and Linux on the [Releases](../../releases) page. All releases are pre-releases for now — expect bugs.
 
 ## Build
 
