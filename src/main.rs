@@ -104,7 +104,52 @@ impl ApplicationHandler<WakeUp> for App {
     }
 }
 
+/// Where crash reports go: `<data dir>/Ferrum/crash.log`.
+fn crash_log_path() -> std::path::PathBuf {
+    dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("Ferrum").join("crash.log")
+}
+
+/// On a crash, write the error and a backtrace to the crash log and, on the
+/// main thread, show it in a dialog, so crashes are never silent.
+fn install_crash_reporter() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("unnamed").to_string();
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown error".into());
+        let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let report = format!(
+            "Ferrum {} crashed\nOS: {} {}\nThread: {thread_name}\nError: {message}\nAt: {location}\n\n{}\n",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            std::backtrace::Backtrace::force_capture(),
+        );
+        let path = crash_log_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, &report);
+        // Servo's background threads may panic during normal shutdown; only
+        // interrupt the user for main-thread crashes.
+        if thread_name == "main" {
+            let _ = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Ferrum crashed")
+                .set_description(format!("{message}\n\nAt {location}\n\nA full report was saved to:\n{}", path.display()))
+                .show();
+        }
+    }));
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    install_crash_reporter();
     let args = parse_args();
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()

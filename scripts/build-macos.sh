@@ -51,6 +51,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>$MACOSX_DEPLOYMENT_TARGET</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSCameraUsageDescription</key><string>Websites you allow can use the camera.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Websites you allow can use the microphone.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>CFBundleURLTypes</key>
   <array>
@@ -69,7 +71,12 @@ if [[ -f assets/Ferrum.icns ]]; then
 fi
 
 echo "==> Signing (ad-hoc; set SIGN_IDENTITY to sign with a Developer ID)"
-codesign --force --deep --options runtime --sign "${SIGN_IDENTITY:--}" "$APP"
+# The entitlements let SpiderMonkey's JIT allocate executable memory under the
+# hardened runtime; without them JavaScript fails to start and Ferrum crashes.
+codesign --force --deep --options runtime \
+  --entitlements assets/Ferrum.entitlements \
+  --sign "${SIGN_IDENTITY:--}" "$APP"
+codesign --verify --strict "$APP"
 
 echo "==> Packaging .dmg"
 DMG="$DIST/Ferrum-$VERSION-macos-universal.dmg"
