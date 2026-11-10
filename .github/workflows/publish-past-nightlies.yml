@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MIT
+# Publishes every finished build of `main` that doesn't have a release yet as a
+# "nightly-<commit>" pre-release. Runs once when this file is pushed, and can be
+# run again any time from the Actions tab ("Run workflow").
+name: Publish past builds as nightlies
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/publish-past-nightlies.yml"]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish a pre-release for each finished build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/actions/workflows/build.yml/runs?branch=main&status=completed&per_page=100" \
+            --jq '.workflow_runs[] | "\(.id) \(.head_sha) \(.conclusion)"' |
+          while read -r run sha conclusion; do
+            short="${sha:0:7}"
+            tag="nightly-$short"
+            if gh release view "$tag" -R "$REPO" >/dev/null 2>&1; then
+              echo "$tag already published"
+              continue
+            fi
+            dir="builds/$short"
+            mkdir -p "$dir"
+            gh run download "$run" -R "$REPO" -D "$dir" || true
+            mapfile -t files < <(find "$dir" -type f | sort)
+            if [ "${#files[@]}" -eq 0 ]; then
+              echo "No builds to publish for $short"
+              continue
+            fi
+            note="Nightly build of commit $sha — not a stable release, may contain bugs."
+            if [ "$conclusion" != "success" ]; then
+              note="$note This run ended as \"$conclusion\", so some platforms may be missing."
+            fi
+            echo "Publishing $tag with ${#files[@]} file(s)"
+            gh release create "$tag" "${files[@]}" -R "$REPO" \
+              --target "$sha" --prerelease --latest=false \
+              --title "Nightly ($short)" --notes "$note"
+          done
