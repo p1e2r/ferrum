@@ -2,6 +2,11 @@
 # Publishes every finished build of `main` that doesn't have a release yet as a
 # "nightly-<commit>" pre-release. Runs once when this file is pushed, and can be
 # run again any time from the Actions tab ("Run workflow").
+#
+# GitHub doesn't let the Actions token create tags on older commits whose
+# workflow files differ from the current main, so older builds are published
+# on a tag at the current commit; the title and notes name the commit the
+# downloads were actually built from.
 name: Publish past builds as nightlies
 
 on:
@@ -46,8 +51,13 @@ jobs:
             if [ "$conclusion" != "success" ]; then
               note="$note This run ended as \"$conclusion\", so some platforms may be missing."
             fi
+            target="$sha"
+            if [ "$sha" != "$GITHUB_SHA" ]; then
+              target="$GITHUB_SHA"
+              note="$note The downloads were built from $sha; this release's tag (and GitHub's \"Source code\" archives) point to the newer commit ${GITHUB_SHA:0:7}."
+            fi
             echo "Publishing $tag with ${#files[@]} file(s)"
             gh release create "$tag" "${files[@]}" -R "$REPO" \
-              --target "$sha" --prerelease --latest=false \
+              --target "$target" --prerelease --latest=false \
               --title "Nightly ($short)" --notes "$note"
           done
