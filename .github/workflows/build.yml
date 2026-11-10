@@ -53,8 +53,9 @@ jobs:
       - name: macOS dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install llvm cmake pkg-config
-          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          brew install cmake pkg-config
+          # Xcode's libclang matches the SDK headers (needed for the Intel build).
+          echo "LIBCLANG_PATH=$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib" >> "$GITHUB_ENV"
 
       - name: Windows dependencies
         if: runner.os == 'Windows'
@@ -100,7 +101,8 @@ jobs:
   #   push to main → "nightly-<commit>" (kept) + "Nightly" (rolling, replaced)
   #   version tag  → that version, also as a pre-release
   release:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    # Publish whatever platforms built, even if one failed.
+    if: ${{ !cancelled() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     needs: build
     runs-on: ubuntu-24.04
     env:
