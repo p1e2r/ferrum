@@ -97,9 +97,11 @@ jobs:
             dist/*.tar.gz
 
   # Until Ferrum is ready for production, EVERY build is published as a
-  # nightly pre-release:
-  #   push to main → "nightly-<commit>" (kept) + "Nightly" (rolling, replaced)
-  #   version tag  → that version, also as a pre-release
+  # versioned nightly pre-release (x.x.x):
+  #   push to main → the version in Cargo.toml; if that version is already
+  #                  released, the next free patch number (0.4.1 → 0.4.2 → …)
+  #   version tag  → that version
+  # Bump the major/minor version in Cargo.toml for bigger changes.
   release:
     # Publish whatever platforms built, even if one failed.
     if: ${{ !cancelled() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
@@ -109,34 +111,43 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Publish this commit as a nightly
-        if: github.ref == 'refs/heads/main'
+      - name: Pick the version
+        id: version
         run: |
-          short="${GITHUB_SHA:0:7}"
-          gh release delete "nightly-$short" --cleanup-tag --yes -R "$REPO" || true
-          gh release create "nightly-$short" dist/* -R "$REPO" \
-            --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "Nightly ($short)" \
-            --notes "Nightly build of commit $GITHUB_SHA — not a stable release, may contain bugs."
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          IFS=. read -r major minor patch <<< "$base"
+          while gh release view "v$major.$minor.$patch" -R "$REPO" >/dev/null 2>&1; do
+            patch=$((patch + 1))
+          done
+          echo "version=$major.$minor.$patch" >> "$GITHUB_OUTPUT"
 
-      - name: Update the rolling Nightly
-        if: github.ref == 'refs/heads/main'
+      - name: Publish nightly pre-release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          short="${GITHUB_SHA:0:7}"
-          gh release delete nightly --cleanup-tag --yes -R "$REPO" || true
-          gh release create nightly dist/* -R "$REPO" \
-            --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "Nightly (latest: $short)" \
-            --notes "Always the newest build of main ($GITHUB_SHA) — not a stable release, may contain bugs."
+          shopt -s nullglob
+          files=(dist/*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "Nothing built, nothing to publish"
+            exit 0
+          fi
+          args=(--prerelease --latest=false --title "Ferrum $VERSION (nightly)")
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            args+=(--verify-tag --generate-notes)
+          else
+            args+=(--target "$GITHUB_SHA" --notes "Nightly pre-release — not ready for production, may contain bugs.
 
-      - name: Publish version as a pre-release
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          gh release create "$GITHUB_REF_NAME" dist/* -R "$REPO" \
-            --verify-tag --prerelease --latest=false --generate-notes \
-            --title "$GITHUB_REF_NAME (pre-release)"
+          Built from commit $GITHUB_SHA.")
+          fi
+          gh release create "v$VERSION" "${files[@]}" -R "$REPO" "${args[@]}"

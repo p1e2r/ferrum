@@ -1,6 +1,6 @@
 [package]
 name = "ferrum"
-version = "0.2.0"
+version = "0.4.1"
 edition = "2024"
 license = "MIT"
 description = "A fast, native web browser written in Rust: Servo engine with a natively drawn interface."

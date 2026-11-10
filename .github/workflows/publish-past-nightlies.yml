@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
-# Publishes every finished build of `main` that doesn't have a release yet as a
-# "nightly-<commit>" pre-release. Runs once when this file is pushed, and can be
-# run again any time from the Actions tab ("Run workflow").
+# Publishes earlier builds of `main` as versioned nightly pre-releases, oldest
+# first, so the Releases page lists them in the order they were made.
+#
+# Runs once when this file is pushed, and can be re-run from the Actions tab.
+# It is idempotent: versions that already have a release are skipped. Old-style
+# "nightly…" releases are removed first.
 #
 # GitHub doesn't let the Actions token create tags on older commits whose
-# workflow files differ from the current main, so older builds are published
-# on a tag at the current commit; the title and notes name the commit the
-# downloads were actually built from.
+# workflow files differ from the current main, so these releases are tagged at
+# the current commit; the notes name the commit the downloads were built from.
 name: Publish past builds as nightlies
 
 on:
@@ -22,42 +24,61 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      # commit:version, oldest first.
+      HISTORY: >-
+        a8d9bba:0.2.0
+        5884e98:0.3.0
+        6a984af:0.3.1
+        484aab5:0.4.0
     steps:
-      - name: Publish a pre-release for each finished build
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+      - name: Remove old-style nightly releases
+        run: |
+          gh release list -R "$REPO" --limit 200 --json tagName --jq '.[].tagName' |
+            { grep -E '^nightly' || true; } | while read -r tag; do
+              echo "Removing $tag"
+              gh release delete "$tag" --cleanup-tag --yes -R "$REPO"
+            done
+
+      - name: Publish each past build, oldest first
         run: |
           set -euo pipefail
-          gh api "repos/$REPO/actions/workflows/build.yml/runs?branch=main&status=completed&per_page=100" \
-            --jq '.workflow_runs[] | "\(.id) \(.head_sha) \(.conclusion)"' |
-          while read -r run sha conclusion; do
-            short="${sha:0:7}"
-            tag="nightly-$short"
+          runs=$(gh api "repos/$REPO/actions/workflows/build.yml/runs?branch=main&status=completed&per_page=100" \
+            --jq '.workflow_runs[] | "\(.id) \(.head_sha) \(.conclusion)"')
+          for entry in $HISTORY; do
+            short="${entry%%:*}"
+            version="${entry##*:}"
+            tag="v$version"
             if gh release view "$tag" -R "$REPO" >/dev/null 2>&1; then
               echo "$tag already published"
               continue
             fi
-            dir="builds/$short"
-            mkdir -p "$dir"
-            gh run download "$run" -R "$REPO" -D "$dir" || true
-            # Only packaged downloads, not the contents of the unpacked Ferrum.app.
-            mapfile -t files < <(find "$dir" -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' \) -not -path '*.app/*' | sort)
-            if [ "${#files[@]}" -eq 0 ]; then
-              echo "No builds to publish for $short"
+            # The newest finished run for that commit that produced builds.
+            found=""
+            files=()
+            while read -r run sha conclusion; do
+              [[ "$sha" == "$short"* ]] || continue
+              dir="builds/$version"
+              rm -rf "$dir" && mkdir -p "$dir"
+              gh run download "$run" -R "$REPO" -D "$dir" || true
+              mapfile -t files < <(find "$dir" -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' \) -not -path '*.app/*' | sort)
+              if [ "${#files[@]}" -gt 0 ]; then found="$sha"; break; fi
+            done <<< "$runs"
+            if [ -z "$found" ]; then
+              echo "No builds found for $short"
               continue
             fi
-            note="Nightly build of commit $sha — not a stable release, may contain bugs."
-            if [ "$conclusion" != "success" ]; then
-              note="$note This run ended as \"$conclusion\", so some platforms may be missing."
+            notes="Nightly pre-release — not ready for production, may contain bugs."
+            notes="$notes"$'\n\n'"Built from commit $found. This release's tag (and GitHub's \"Source code\" archives) point to the newer commit ${GITHUB_SHA:0:7}, because GitHub doesn't allow tagging older commits from Actions."
+            if [ "$version" = "0.3.0" ]; then
+              notes="⚠️ Known issue: the macOS app in this build crashes at launch (fixed in 0.3.1)."$'\n\n'"$notes"
             fi
-            target="$sha"
-            if [ "$sha" != "$GITHUB_SHA" ]; then
-              target="$GITHUB_SHA"
-              note="$note The downloads were built from $sha; this release's tag (and GitHub's \"Source code\" archives) point to the newer commit ${GITHUB_SHA:0:7}."
-            fi
-            echo "Publishing $tag with ${#files[@]} file(s)"
+            echo "Publishing $tag (${#files[@]} files) from $found"
             gh release create "$tag" "${files[@]}" -R "$REPO" \
-              --target "$target" --prerelease --latest=false \
-              --title "Nightly ($short)" --notes "$note"
+              --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Ferrum $version (nightly)" --notes "$notes"
+            # Distinct creation times keep the Releases page in order.
+            sleep 2
           done
