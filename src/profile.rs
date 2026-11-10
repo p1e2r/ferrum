@@ -208,6 +208,9 @@ pub struct HistoryEntry {
 #[serde(default)]
 struct Session {
     tabs: Vec<String>,
+    /// Page titles, parallel to `tabs`, so restored tabs show their names
+    /// before they've loaded. (Missing in sessions saved by older versions.)
+    titles: Vec<String>,
     active: usize,
 }
 
@@ -315,15 +318,18 @@ impl Profile {
 
     // ----- session -----
 
-    pub fn load_session(&self) -> (Vec<String>, usize) {
+    /// The tabs open last time as (url, title) pairs, and which one was active.
+    pub fn load_session(&self) -> (Vec<(String, String)>, usize) {
         let Some(dir) = &self.dir else { return (Vec::new(), 0) };
-        let session: Session = read_json(&dir.join("session.json"));
-        (session.tabs, session.active)
+        let mut session: Session = read_json(&dir.join("session.json"));
+        session.titles.resize(session.tabs.len(), String::new());
+        (session.tabs.into_iter().zip(session.titles).collect(), session.active)
     }
 
-    pub fn save_session(&self, tabs: Vec<String>, active: usize) {
+    pub fn save_session(&self, tabs: Vec<(String, String)>, active: usize) {
         if let Some(dir) = &self.dir {
-            write_json(&dir.join("session.json"), &Session { tabs, active });
+            let (tabs, titles) = tabs.into_iter().unzip();
+            write_json(&dir.join("session.json"), &Session { tabs, titles, active });
         }
     }
 

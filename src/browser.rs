@@ -88,6 +88,8 @@ impl Delegate {
 
 impl WebViewDelegate for Delegate {
     fn notify_new_frame_ready(&self, _: WebView) {
+        static FIRST: std::sync::Once = std::sync::Once::new();
+        FIRST.call_once(|| crate::timing("first page frame from Servo"));
         self.window.request_redraw();
     }
     fn notify_url_changed(&self, _: WebView, _: Url) {
@@ -249,14 +251,33 @@ pub struct Tab {
     pub upgraded_to_https: bool,
     /// Automatic retries left for the current navigation.
     pub retries_left: u8,
+    /// A restored tab that hasn't been opened yet: its page loads the first
+    /// time the tab is selected, so start-up only loads the active tab.
+    pub pending: Option<(Url, String)>,
 }
 
 impl Tab {
     fn new(webview: Option<WebView>, zoom: f32) -> Self {
-        Self { webview, crashed: None, zoom, favicon: None, favicon_dirty: false, upgraded_to_https: false, retries_left: 1 }
+        Self {
+            webview,
+            crashed: None,
+            zoom,
+            favicon: None,
+            favicon_dirty: false,
+            upgraded_to_https: false,
+            retries_left: 1,
+            pending: None,
+        }
+    }
+
+    fn restored(url: Url, title: String, zoom: f32) -> Self {
+        Self { pending: Some((url, title)), ..Self::new(None, zoom) }
     }
 
     pub fn title(&self) -> String {
+        if let Some((url, title)) = &self.pending {
+            return if title.trim().is_empty() { url.host_str().unwrap_or(url.as_str()).to_string() } else { title.clone() };
+        }
         match &self.webview {
             Some(w) => w
                 .page_title()
@@ -268,6 +289,9 @@ impl Tab {
     }
 
     pub fn url(&self) -> Option<Url> {
+        if let Some((url, _)) = &self.pending {
+            return Some(url.clone());
+        }
         self.webview.as_ref().and_then(|w| w.url())
     }
 
@@ -344,6 +368,7 @@ impl Browser {
         private: bool,
     ) -> Self {
         let profile = Profile::load(if private { None } else { Profile::default_dir() });
+        crate::timing("profile loaded");
 
         let title = if private { format!("{APP_NAME} (Private)") } else { APP_NAME.to_string() };
         let attributes = Window::default_attributes()
@@ -351,6 +376,7 @@ impl Browser {
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 840.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 320.0));
         let window = Rc::new(event_loop.create_window(attributes).expect("create window"));
+        crate::timing("window created");
         // Window/taskbar icon on Windows and Linux (macOS uses the app bundle's icon).
         #[cfg(not(target_os = "macos"))]
         {
@@ -370,6 +396,7 @@ impl Browser {
         // Pages render into an offscreen framebuffer that egui composites under the toolbar.
         let page_context = Rc::new(window_context.offscreen_context(window.inner_size()));
         page_context.make_current().expect("make GL context current");
+        crate::timing("OpenGL contexts ready");
 
         // Cookies and site storage persist in the profile; private windows keep them in memory.
         let mut opts = Opts::default();
@@ -395,7 +422,9 @@ impl Browser {
             .build();
         servo.setup_logging();
 
+        crate::timing("Servo engine started");
         let egui = EguiGlow::new(event_loop, page_context.glow_gl_api(), None, None, false);
+        crate::timing("interface ready");
         crate::ui::style(&egui.egui_ctx, &profile.settings);
 
         // egui tells us *when* it next needs to repaint (now, or after a delay for
@@ -470,9 +499,13 @@ impl Browser {
         if let Some(url) = initial_url.as_deref().and_then(|u| input_to_url(u, &browser.profile.settings)) {
             browser.open_tab(Some(url));
         } else if browser.profile.settings.restore_session && !browser.profile.is_private() {
-            let (urls, active) = browser.profile.load_session();
-            for url in urls.iter().filter_map(|u| Url::parse(u).ok()) {
-                browser.open_tab(Some(url));
+            // Restored tabs stay unloaded until selected; only the active one loads now.
+            let (saved, active) = browser.profile.load_session();
+            let zoom = browser.profile.settings.default_zoom;
+            for (url, title) in saved {
+                if let Ok(url) = Url::parse(&url) {
+                    browser.tabs.push(Tab::restored(url, title, zoom));
+                }
             }
             if !browser.tabs.is_empty() {
                 browser.activate(active);
@@ -481,6 +514,7 @@ impl Browser {
         if browser.tabs.is_empty() {
             browser.open_home_tab();
         }
+        crate::timing("tabs opened");
         browser
     }
 
@@ -547,6 +581,13 @@ impl Browser {
 
     pub(crate) fn activate(&mut self, index: usize) {
         self.active = index.min(self.tabs.len().saturating_sub(1));
+        // A restored tab loads its page the first time it's shown.
+        if let Some((url, _)) = self.tabs.get_mut(self.active).and_then(|t| t.pending.take()) {
+            let zoom = self.tabs[self.active].zoom;
+            let webview = self.create_webview(url);
+            webview.set_page_zoom(zoom);
+            self.tabs[self.active].webview = Some(webview);
+        }
         for (i, tab) in self.tabs.iter().enumerate() {
             if let Some(webview) = &tab.webview {
                 if i == self.active {
@@ -817,8 +858,20 @@ impl Browser {
         if self.profile.is_private() {
             return;
         }
-        let urls: Vec<String> = self.tabs.iter().filter_map(|t| t.url()).map(|u| u.to_string()).collect();
-        self.profile.save_session(urls, self.active);
+        // Start-page tabs have no URL and aren't saved, so count the active
+        // tab's position among the saved ones.
+        let mut tabs: Vec<(String, String)> = Vec::new();
+        let mut active = 0;
+        for (i, t) in self.tabs.iter().enumerate() {
+            if i == self.active {
+                active = tabs.len();
+            }
+            if let Some(u) = t.url() {
+                tabs.push((u.to_string(), t.title()));
+            }
+        }
+        let active = active.min(tabs.len().saturating_sub(1));
+        self.profile.save_session(tabs, active);
     }
 
     // ----- event loop -------------------------------------------------------
@@ -1237,6 +1290,8 @@ impl Browser {
         self.window_context.prepare_for_rendering();
         egui.paint(&self.window);
         self.window_context.present();
+        static FIRST: std::sync::Once = std::sync::Once::new();
+        FIRST.call_once(|| crate::timing("first window frame shown"));
         self.egui = Some(egui);
     }
 

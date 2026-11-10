@@ -70,7 +70,11 @@ pub struct Tab {
 }
 ```
 
-A tab with no webview shows the start page, which is drawn by Ferrum, so empty tabs cost no engine resources. Navigating from the start page creates the webview. Only the active tab's webview is `show()`n; the others are `hide()`n, which lets Servo throttle them.
+Tabs restored from the last session start with `pending: Some((url, title))` and no webview: they show their saved title and load only when first selected (`activate` creates the webview), so start-up loads just the active tab. A tab with no webview and nothing pending shows the start page, which is drawn by Ferrum, so empty tabs cost no engine resources. Navigating from the start page creates the webview. Only the active tab's webview is `show()`n; the others are `hide()`n, which lets Servo throttle them.
+
+## Start-up timing
+
+Run with `FERRUM_TIMING=1` to print how long each start-up phase takes (profile, window, OpenGL, Servo, interface, tabs, first frame). On a 2-core Linux VM with software rendering, the first window frame appears after roughly 0.1–0.4 s.
 
 ## Why egui
 

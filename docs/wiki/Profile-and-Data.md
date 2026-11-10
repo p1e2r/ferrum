@@ -69,9 +69,9 @@ Look-related fields (theme, accent, size, density, rounding) are hashed by `styl
 [{ "url": "https://servo.org/", "title": "Servo", "visits": 3, "last_visit": 1762780000 }]
 ```
 
-**session.json** — open tabs when Ferrum last closed:
+**session.json** — open tabs when Ferrum last closed, with their titles (shown on restored tabs before they load), and which tab was active:
 ```json
-{ "tabs": ["https://servo.org/"], "active": 0 }
+{ "tabs": ["https://servo.org/"], "titles": ["Servo"], "active": 0 }
 ```
 
 ## Saving

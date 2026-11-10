@@ -32,6 +32,7 @@ A fast, native desktop web browser written in Rust.
 
 ### Efficiency
 
+- Restored tabs load only when you select them, so start-up loads just one page. Run with `FERRUM_TIMING=1` to see start-up timings.
 - Draws only when something changes, and sleeps until the next scheduled repaint — no busy redraw loop; background tabs are hidden so Servo throttles them.
 - Profile data is batched and written atomically a couple of seconds after changes, never on the UI's critical path.
 - Downloads stream straight to disk on their own threads.

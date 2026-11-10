@@ -31,6 +31,18 @@ use winit::window::WindowId;
 
 use crate::browser::Browser;
 
+/// Start-up timing: run with `FERRUM_TIMING=1` to print how long each phase takes.
+pub fn timing(label: &str) {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    let start = *START.get_or_init(Instant::now);
+    if *ENABLED.get_or_init(|| std::env::var_os("FERRUM_TIMING").is_some()) {
+        eprintln!("[ferrum {:>7.1} ms] {label}", start.elapsed().as_secs_f64() * 1000.0);
+    }
+}
+
 /// Sent from other threads (Servo, downloads) when the main thread has work.
 #[derive(Debug, Clone, Copy)]
 pub struct WakeUp;
@@ -159,6 +171,7 @@ fn install_crash_reporter() {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    timing("process start");
     install_crash_reporter();
     let args = parse_args();
     rustls::crypto::aws_lc_rs::default_provider()
