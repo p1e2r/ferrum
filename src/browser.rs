@@ -627,8 +627,14 @@ impl Browser {
                 tab.is_loading = true;
             }
         }
-        self.tabs.push(tab);
-        self.activate(self.tabs.len() - 1);
+        let at = if self.profile.settings.new_tab_next_to_current && !self.tabs.is_empty() {
+            // After the current tab (and after the pinned ones).
+            (self.active + 1).max(self.tabs.iter().filter(|t| t.pinned).count()).min(self.tabs.len())
+        } else {
+            self.tabs.len()
+        };
+        self.tabs.insert(at, tab);
+        self.activate(at);
     }
 
     /// Opened in the background: it loads when selected, so it costs nothing until then.
@@ -686,6 +692,10 @@ impl Browser {
         }
         drop(tab);
         if self.tabs.is_empty() {
+            if self.profile.settings.close_window_with_last_tab {
+                // Nothing to restore next time but the closed tab.
+                self.request_quit();
+            }
             self.open_home_tab();
             return;
         }
@@ -805,7 +815,15 @@ impl Browser {
         if self.editing {
             return;
         }
-        self.location = self.tabs.get(self.active).and_then(|t| t.url()).map(|url| url.to_string()).unwrap_or_default();
+        let url = self.tabs.get(self.active).and_then(|t| t.url());
+        self.location = match url {
+            // Just the site name until the address bar is clicked.
+            Some(u) if self.profile.settings.domain_only_address && matches!(u.scheme(), "http" | "https") => {
+                u.host_str().unwrap_or_default().trim_start_matches("www.").to_string()
+            },
+            Some(u) => u.to_string(),
+            None => String::new(),
+        };
     }
 
     pub(crate) fn can_go_back(&self) -> bool {

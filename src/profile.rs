@@ -166,7 +166,29 @@ pub struct Settings {
     pub show_bookmark_button: bool,
     pub show_downloads_button: bool,
 
+    /// How wide tabs can get.
+    pub tab_width: TabWidth,
+    /// Which tabs show a close button.
+    pub tab_close_buttons: CloseButtons,
+    /// New tabs open next to the current one instead of at the end.
+    pub new_tab_next_to_current: bool,
+    /// Closing the last tab closes the window (otherwise a new tab opens).
+    pub close_window_with_last_tab: bool,
+    /// Hide the forward button when there's nothing to go forward to.
+    pub forward_when_available: bool,
+    pub show_reload_button: bool,
+    pub show_reader_button: bool,
+    pub show_loading_bar: bool,
+    /// Show just the site name in the address bar until it's clicked.
+    pub domain_only_address: bool,
+    /// Animate panels, switches and fades.
+    pub animations: bool,
+
     // Start page
+    pub start_show_search: bool,
+    pub clock_24h: bool,
+    /// How many tiles the start page shows in each group at most.
+    pub start_tiles: u8,
     pub start_title: String,
     pub start_background: StartBackground,
     pub start_color: [u8; 3],
@@ -199,6 +221,35 @@ pub struct Settings {
     pub custom_title_bar: bool,
     /// The user picked the search engine themselves (so Ferrum never changes it).
     pub search_engine_chosen: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TabWidth {
+    Narrow,
+    #[default]
+    Normal,
+    Wide,
+}
+
+impl TabWidth {
+    pub fn max(self) -> f32 {
+        match self {
+            TabWidth::Narrow => 160.0,
+            TabWidth::Normal => 220.0,
+            TabWidth::Wide => 300.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloseButtons {
+    /// Every tab that's wide enough.
+    #[default]
+    All,
+    /// The current tab, and others while the pointer is over them.
+    Hover,
+    /// Only the current tab.
+    Active,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,12 +288,25 @@ impl Default for Settings {
             ui_scale: 1.0,
             compact: false,
             roundness: 12,
-            look_version: 1,
+            look_version: 2,
             tab_layout: TabLayout::default(),
             show_bookmarks_bar: true,
             show_home_button: true,
             show_bookmark_button: true,
             show_downloads_button: true,
+            tab_width: TabWidth::Normal,
+            tab_close_buttons: CloseButtons::All,
+            new_tab_next_to_current: false,
+            close_window_with_last_tab: false,
+            forward_when_available: false,
+            show_reload_button: true,
+            show_reader_button: true,
+            show_loading_bar: true,
+            domain_only_address: false,
+            animations: true,
+            start_show_search: true,
+            clock_24h: true,
+            start_tiles: 16,
             start_title: "Ferrum".into(),
             start_background: StartBackground::default(),
             start_color: [40, 44, 58],
@@ -374,6 +438,14 @@ impl Profile {
                         profile.settings.roundness = 12;
                     }
                     profile.settings.look_version = 1;
+                }
+                // Themes used to set light/dark themselves: keep the look people had.
+                if profile.settings.look_version < 2 {
+                    let preset = profile.settings.theme_preset;
+                    if preset != crate::theme::ThemePreset::Ferrum {
+                        profile.settings.theme = if preset.native_dark() { ThemeChoice::Dark } else { ThemeChoice::Light };
+                    }
+                    profile.settings.look_version = 2;
                 }
                 profile.bookmarks = read_json(&dir.join("bookmarks.json"));
                 profile.history = read_json(&dir.join("history.json"));

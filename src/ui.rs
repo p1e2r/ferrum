@@ -27,7 +27,7 @@ pub fn accent(settings: &Settings) -> Color32 {
 pub fn style_key(s: &Settings) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness).hash(&mut h);
+    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness, s.animations).hash(&mut h);
     h.finish().max(1)
 }
 
@@ -40,15 +40,16 @@ pub fn style(ctx: &egui::Context, settings: &Settings) {
     // Start both light and dark styles from the defaults, then apply the theme.
     ctx.set_style_of(egui::Theme::Light, egui::Style { visuals: egui::Visuals::light(), ..Default::default() });
     ctx.set_style_of(egui::Theme::Dark, egui::Style { visuals: egui::Visuals::dark(), ..Default::default() });
-    match settings.theme_preset.palette() {
-        Some(palette) => {
-            let mode = if palette.dark { egui::Theme::Dark } else { egui::Theme::Light };
-            let high_contrast = settings.theme_preset == crate::theme::ThemePreset::HighContrast;
+    // Every theme has a light and a dark version; the light/dark setting picks
+    // one (or follows the system, which egui switches between by itself).
+    let preset = settings.theme_preset;
+    let high_contrast = preset == crate::theme::ThemePreset::HighContrast;
+    for (mode, dark) in [(egui::Theme::Light, false), (egui::Theme::Dark, true)] {
+        if let Some(palette) = preset.palette_for(dark) {
             ctx.style_mut_of(mode, |style| crate::theme::apply(&mut style.visuals, &palette, high_contrast));
-            ctx.set_theme(mode);
-        },
-        None => set_theme(ctx, settings.theme),
+        }
     }
+    set_theme(ctx, settings.theme);
     ctx.set_zoom_factor(settings.ui_scale.clamp(0.7, 1.6));
     let accent = accent(settings);
     let r = CornerRadius::same(settings.roundness);
@@ -75,6 +76,10 @@ pub fn style(ctx: &egui::Context, settings: &Settings) {
         style.visuals.window_corner_radius = CornerRadius::same(popup_radius(settings));
         style.visuals.menu_corner_radius = CornerRadius::same(popup_radius(settings));
         style.interaction.tooltip_delay = 0.4;
+        if !settings.animations {
+            style.animation_time = 0.0;
+            style.scroll_animation = egui::style::ScrollAnimation::none();
+        }
     });
 }
 
@@ -589,7 +594,7 @@ impl Browser {
                     const PINNED_WIDTH: f32 = 42.0;
                     let unpinned = (self.tabs.len() - pinned_count).max(1) as f32;
                     // Each tab is followed by 2 px of spacing.
-                    let width = ((available - pinned_count as f32 * (PINNED_WIDTH + 2.0) - unpinned * 2.0) / unpinned).floor().clamp(60.0, 220.0);
+                    let width = ((available - pinned_count as f32 * (PINNED_WIDTH + 2.0) - unpinned * 2.0) / unpinned).floor().clamp(60.0, self.profile.settings.tab_width.max());
                     egui::ScrollArea::horizontal()
                         .max_width(available)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -627,7 +632,12 @@ impl Browser {
                                                 let tip = if tab.muted { "Unmute tab" } else { "Mute tab" };
                                                 speaker_rect = Some(icon_button(ui, i, 18.0, true, tip).rect);
                                             }
-                                            let show_close = width > 90.0 || selected;
+                                            let hovered = ui.rect_contains_pointer(ui.max_rect().expand2(vec2(14.0, 6.0)));
+                                            let show_close = match self.profile.settings.tab_close_buttons {
+                                                crate::profile::CloseButtons::All => width > 90.0 || selected,
+                                                crate::profile::CloseButtons::Hover => selected || (hovered && width > 70.0),
+                                                crate::profile::CloseButtons::Active => selected,
+                                            };
                                             let gap = ui.spacing().item_spacing.x;
                                             let room = if show_close { CLOSE_SIZE + gap } else { 0.0 };
                                             let bg = if selected { tab_fill } else { fill };
@@ -724,6 +734,9 @@ impl Browser {
             self.profile.settings.show_bookmark_button,
             self.profile.settings.show_downloads_button,
         );
+        let show_forward = !self.profile.settings.forward_when_available || can_forward;
+        let (show_reload, show_reader, show_loading_bar) =
+            (self.profile.settings.show_reload_button, self.profile.settings.show_reader_button, self.profile.settings.show_loading_bar);
         let button = if self.profile.settings.compact { 26.0 } else { 30.0 };
         let reader_on = self.active_tab().reader.is_some();
         let blocked = self.active_tab().blocked;
@@ -744,11 +757,11 @@ impl Browser {
                     if icon_button(ui, Icon::Back, button, can_back, "Back (Alt+←)").clicked() {
                         self.go_back();
                     }
-                    if icon_button(ui, Icon::Forward, button, can_forward, "Forward (Alt+→)").clicked() {
+                    if show_forward && icon_button(ui, Icon::Forward, button, can_forward, "Forward (Alt+→)").clicked() {
                         self.go_forward();
                     }
                     let (icon, tip) = if loading { (Icon::Stop, "Stop loading") } else { (Icon::Reload, "Reload (Ctrl+R)") };
-                    if icon_button(ui, icon, button, has_page, tip).clicked() {
+                    if show_reload && icon_button(ui, icon, button, has_page, tip).clicked() {
                         if loading { self.stop() } else { self.reload() }
                     }
                     if show_home && icon_button(ui, Icon::Home, button, true, "Home").clicked() {
@@ -781,7 +794,7 @@ impl Browser {
                                 self.toggle_bookmark();
                             }
                         }
-                        if has_page {
+                        if has_page && (show_reader || reader_on) {
                             let on = reader_on;
                             let resp = icon_button(ui, Icon::Reader, button, true, if on { "Exit reader mode (F9)" } else { "Reader mode (F9)" });
                             if on {
@@ -844,6 +857,13 @@ impl Browser {
                             url_focused = response.has_focus();
 
                             let select_all = self.focus_location || response.gained_focus();
+                            if select_all && !self.editing && self.profile.settings.domain_only_address {
+                                // Show the full address for editing.
+                                self.location = self.active_tab().url().map(|u| u.to_string()).unwrap_or_default();
+                            }
+                            if !response.has_focus() && !self.editing && !self.focus_location {
+                                self.sync_location();
+                            }
                             if self.focus_location {
                                 response.request_focus();
                                 self.focus_location = false;
@@ -886,7 +906,7 @@ impl Browser {
 
         // Page-load progress line along the bottom of the toolbar (the page
         // itself is a native view, so nothing can be drawn on it).
-        if loading {
+        if loading && show_loading_bar {
             let rect = toolbar.response.rect;
             let t = ui.input(|i| i.time) as f32;
             let w = rect.width();
@@ -1072,7 +1092,8 @@ impl Browser {
             ui.vertical_centered(|ui| {
                 if settings.start_show_clock {
                     let now = chrono::Local::now();
-                    ui.label(RichText::new(now.format("%H:%M").to_string()).size(64.0).color(text_color));
+                    let time = if settings.clock_24h { now.format("%H:%M").to_string() } else { now.format("%-I:%M %p").to_string() };
+                    ui.label(RichText::new(time).size(64.0).color(text_color));
                     ui.label(RichText::new(now.format("%A, %e %B").to_string()).size(15.0).color(weak_color));
                     ui.add_space(14.0);
                     // Repaint when the minute changes, not continuously.
@@ -1086,16 +1107,18 @@ impl Browser {
                     ui.label(RichText::new("Private window — history, cookies and site data are forgotten when it closes").size(14.0).color(weak_color));
                 }
                 ui.add_space(22.0);
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.start_query)
-                        .hint_text(format!("Search with {} or type an address", settings.search_engine.name()))
-                        .font(FontId::proportional(17.0))
-                        .margin(Margin::symmetric(14, 10))
-                        .background_color(ui.visuals().extreme_bg_color)
-                        .desired_width(width),
-                );
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(EKey::Enter)) && !self.start_query.trim().is_empty() {
-                    go = Some((std::mem::take(&mut self.start_query), false));
+                if settings.start_show_search {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.start_query)
+                            .hint_text(format!("Search with {} or type an address", settings.search_engine.name()))
+                            .font(FontId::proportional(17.0))
+                            .margin(Margin::symmetric(14, 10))
+                            .background_color(ui.visuals().extreme_bg_color)
+                            .desired_width(width),
+                    );
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(EKey::Enter)) && !self.start_query.trim().is_empty() {
+                        go = Some((std::mem::take(&mut self.start_query), false));
+                    }
                 }
                 ui.add_space(26.0);
 
@@ -1163,7 +1186,7 @@ impl Browser {
                 };
 
                 if settings.start_show_bookmarks {
-                    let items = self.profile.bookmarks.iter().take(16).map(|b| (b.title.clone(), b.url.clone())).collect();
+                    let items = self.profile.bookmarks.iter().take(settings.start_tiles as usize).map(|b| (b.title.clone(), b.url.clone())).collect();
                     tiles(ui, "Bookmarks", items, true, &mut go, &mut menu, &mut remove);
                 }
                 if settings.start_show_frequent {
@@ -1171,7 +1194,7 @@ impl Browser {
                     top.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_visit.cmp(&a.last_visit)));
                     let items = top
                         .iter()
-                        .take(8)
+                        .take((settings.start_tiles as usize / 2).max(4))
                         .map(|h| (if h.title.is_empty() { h.url.clone() } else { h.title.clone() }, h.url.clone()))
                         .collect();
                     tiles(ui, "Frequently visited", items, false, &mut go, &mut menu, &mut remove);

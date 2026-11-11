@@ -23,7 +23,7 @@ const ENGINE_NAME: &str = if cfg!(target_os = "macos") {
 };
 
 use crate::browser::{APP_NAME, Browser};
-use crate::profile::{DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, ThemeChoice};
+use crate::profile::{CloseButtons, DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, TabWidth, ThemeChoice};
 use crate::theme::{ThemePreset, mix};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,6 +96,19 @@ enum Setting {
     Density,
     Roundness,
     TabLayout,
+    TabWidth,
+    TabCloseButtons,
+    NewTabPosition,
+    LastTab,
+    ForwardButton,
+    ReloadButton,
+    ReaderButton,
+    LoadingBar,
+    DomainOnly,
+    Animations,
+    StartSearch,
+    ClockFormat,
+    StartTiles,
     BookmarksBar,
     HomeButton,
     BookmarkButton,
@@ -155,13 +168,23 @@ use Setting as T;
 
 const ITEMS: &[Item] = &[
     item(S::Appearance, T::Theme, "Theme", "Colours for the whole interface. Choosing a theme also sets its accent colour.", "colour color palette dark light skin look", true),
-    item(S::Appearance, T::Mode, "Light or dark", "For the Ferrum theme. Other themes are always light or always dark.", "dark mode light mode system appearance night", false),
+    item(S::Appearance, T::Mode, "Light or dark", "Works with every theme. System follows your computer's setting.", "dark mode light mode system appearance night", false),
     item(S::Appearance, T::Accent, "Accent colour", "Used for highlights, selected items and the loading bar.", "color highlight tint", true),
     item(S::Appearance, T::UiScale, "Interface size", "Size of tabs, toolbar and menus. Doesn't affect pages; use page zoom for that.", "scale zoom ui bigger smaller text size", false),
     item(S::Appearance, T::Density, "Density", "Compact fits more on screen.", "compact comfortable spacing padding", false),
+    item(S::Appearance, T::Animations, "Animations", "Switches, panels and fades. Turn off on slow computers or if you prefer less motion.", "motion reduce animate speed performance", false),
     item(S::Appearance, T::Roundness, "Corner rounding", "How rounded buttons, tabs and fields are.", "radius corners square", false),
     item(S::Tabs, T::TitleBar, "Tabs in the title bar", "Like Chrome: no system title bar, the tabs sit at the top of the window with Ferrum's own minimise, maximise and close buttons. Drag the empty space next to the tabs to move the window.", "window titlebar decorations frame close button minimize maximize chrome", false),
     item(S::Tabs, T::TabLayout, "Tab position", "Along the top, or a list down the side.", "vertical tabs sidebar horizontal", false),
+    item(S::Tabs, T::TabWidth, "Tab width", "How wide tabs get when there's room.", "size narrow wide tabs", false),
+    item(S::Tabs, T::TabCloseButtons, "Close buttons on tabs", "", "x cross close tab hover", false),
+    item(S::Tabs, T::NewTabPosition, "Open new tabs next to the current tab", "Otherwise they open at the end.", "new tab position order", false),
+    item(S::Tabs, T::LastTab, "Closing the last tab closes the window", "Otherwise a new tab opens.", "last tab quit window", false),
+    item(S::Tabs, T::ForwardButton, "Forward button only when you can go forward", "", "toolbar forward hide", false),
+    item(S::Tabs, T::ReloadButton, "Reload button", "", "toolbar refresh", false),
+    item(S::Tabs, T::ReaderButton, "Reader mode button", "In the address bar.", "toolbar reader", false),
+    item(S::Tabs, T::LoadingBar, "Loading bar", "The line under the toolbar while a page loads.", "progress loading indicator", false),
+    item(S::Tabs, T::DomainOnly, "Show only the site name in the address bar", "The full address appears when you click it.", "url domain host simplified full address", false),
     item(S::Tabs, T::SleepTabs, "Sleeping tabs", "Unload tabs you haven't used for a while to save memory and battery. They reload when you select them. Pinned tabs and tabs playing sound stay awake.", "memory performance discard suspend battery", false),
     item(S::Tabs, T::BookmarksBar, "Bookmarks bar", "Show your bookmarks under the toolbar. Ctrl+Shift+B.", "favourites favorites", false),
     item(S::Tabs, T::HomeButton, "Home button", "", "toolbar", false),
@@ -171,6 +194,9 @@ const ITEMS: &[Item] = &[
     item(S::StartPage, T::StartBackground, "Background", "", "wallpaper gradient colour image photo", false),
     item(S::StartPage, T::StartColor, "Background colour", "", "wallpaper", false),
     item(S::StartPage, T::StartImage, "Background image", "PNG, JPEG, WebP, GIF or BMP. Large photos are scaled down.", "wallpaper photo picture", false),
+    item(S::StartPage, T::StartSearch, "Search box", "", "search field", false),
+    item(S::StartPage, T::ClockFormat, "Clock format", "", "time 12 24 hour am pm", false),
+    item(S::StartPage, T::StartTiles, "Number of tiles", "The most bookmark tiles and frequently visited tiles shown.", "shortcuts count how many", false),
     item(S::StartPage, T::StartClock, "Clock and date", "", "time", false),
     item(S::StartPage, T::StartBookmarks, "Bookmark tiles", "", "shortcuts", false),
     item(S::StartPage, T::StartFrequent, "Frequently visited tiles", "Sites you visit most, from your history.", "shortcuts top sites most visited", false),
@@ -404,11 +430,7 @@ impl Browser {
         match setting {
             Setting::Theme => self.theme_gallery(ui),
             Setting::Mode => {
-                if s.theme_preset == ThemePreset::Ferrum {
-                    segmented(ui, &mut s.theme, &[(ThemeChoice::Dark, "Dark"), (ThemeChoice::Light, "Light"), (ThemeChoice::System, "System")]);
-                } else {
-                    ui.label(RichText::new(format!("Set by the {} theme", s.theme_preset.name())).weak());
-                }
+                segmented(ui, &mut s.theme, &[(ThemeChoice::Dark, "Dark"), (ThemeChoice::Light, "Light"), (ThemeChoice::System, "System")]);
             },
             Setting::Accent => {
                 ui.horizontal_wrapped(|ui| {
@@ -428,7 +450,7 @@ impl Browser {
                     if ui.color_edit_button_srgba(&mut c).on_hover_text("Any colour").changed() {
                         s.accent = [c.r(), c.g(), c.b()];
                     }
-                    if let Some(p) = s.theme_preset.palette() {
+                    if let Some(p) = s.theme_preset.palette_for(ui.ctx().theme() == egui::Theme::Dark) {
                         if s.accent != p.accent && ui.small_button("Theme's colour").clicked() {
                             s.accent = p.accent;
                         }
@@ -449,6 +471,41 @@ impl Browser {
             Setting::HomeButton => {
                 toggle(ui, &mut s.show_home_button, accent);
             },
+            Setting::TabWidth => segmented(ui, &mut s.tab_width, &[(TabWidth::Wide, "Wide"), (TabWidth::Normal, "Normal"), (TabWidth::Narrow, "Narrow")]),
+            Setting::TabCloseButtons => segmented(
+                ui,
+                &mut s.tab_close_buttons,
+                &[(CloseButtons::Active, "Current tab"), (CloseButtons::Hover, "On hover"), (CloseButtons::All, "All tabs")],
+            ),
+            Setting::NewTabPosition => {
+                toggle(ui, &mut s.new_tab_next_to_current, accent);
+            },
+            Setting::LastTab => {
+                toggle(ui, &mut s.close_window_with_last_tab, accent);
+            },
+            Setting::ForwardButton => {
+                toggle(ui, &mut s.forward_when_available, accent);
+            },
+            Setting::ReloadButton => {
+                toggle(ui, &mut s.show_reload_button, accent);
+            },
+            Setting::ReaderButton => {
+                toggle(ui, &mut s.show_reader_button, accent);
+            },
+            Setting::LoadingBar => {
+                toggle(ui, &mut s.show_loading_bar, accent);
+            },
+            Setting::DomainOnly => {
+                toggle(ui, &mut s.domain_only_address, accent);
+            },
+            Setting::Animations => {
+                toggle(ui, &mut s.animations, accent);
+            },
+            Setting::StartSearch => {
+                toggle(ui, &mut s.start_show_search, accent);
+            },
+            Setting::ClockFormat => segmented(ui, &mut s.clock_24h, &[(false, "12-hour"), (true, "24-hour")]),
+            Setting::StartTiles => segmented(ui, &mut s.start_tiles, &[(32, "32"), (24, "24"), (16, "16"), (8, "8")]),
             Setting::BookmarkButton => {
                 toggle(ui, &mut s.show_bookmark_button, accent);
             },
@@ -749,7 +806,9 @@ impl Browser {
                 let (rect, resp) = ui.allocate_exact_size(card_size, Sense::click());
                 let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                 let (panel, surface, text) = preset.preview(ferrum_dark);
-                let [r, g, b] = preset.palette().map_or(DEFAULT_ACCENT, |p| p.accent);
+                // The accent of the version shown.
+                let accent_shown = preset.palette_for(ferrum_dark).map(|p| p.accent);
+                let [r, g, b] = accent_shown.unwrap_or(DEFAULT_ACCENT);
                 let dot = Color32::from_rgb(r, g, b);
                 let p = ui.painter();
                 let preview = egui::Rect::from_min_size(rect.min, vec2(rect.width(), 72.0));
@@ -778,7 +837,7 @@ impl Browser {
                 if resp.clicked() {
                     let s = &mut self.profile.settings;
                     s.theme_preset = preset;
-                    s.accent = preset.palette().map_or(DEFAULT_ACCENT, |p| p.accent);
+                    s.accent = accent_shown.unwrap_or(DEFAULT_ACCENT);
                 }
             }
         });

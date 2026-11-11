@@ -3,9 +3,10 @@
 
 //! Colour themes for the interface.
 //!
-//! "Ferrum" is the built-in look and follows the light/dark mode setting. Every
-//! other theme is a complete palette (backgrounds, surfaces, text) with its own
-//! light or dark mode and a suggested accent colour.
+//! "Ferrum" is the built-in look. Every other theme is a complete palette
+//! (backgrounds, surfaces, text) with a suggested accent colour, in a light
+//! and a dark version, so the light/dark setting works with every theme.
+//! Each theme also has a "native" mode: the version it was designed as.
 
 use egui::{Color32, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
@@ -70,8 +71,35 @@ impl ThemePreset {
         }
     }
 
-    /// The theme's own palette; `None` for Ferrum, which uses the standard look.
-    pub fn palette(self) -> Option<Palette> {
+    /// Whether the theme was designed as a dark one.
+    pub fn native_dark(self) -> bool {
+        self.native().is_some_and(|p| p.dark)
+    }
+
+    /// The theme's palette in light or dark mode; `None` for Ferrum.
+    pub fn palette_for(self, dark: bool) -> Option<Palette> {
+        let native = self.native()?;
+        if native.dark == dark {
+            return Some(native);
+        }
+        let p = |panel, surface, text, accent| Some(Palette { dark, panel, surface, text, accent });
+        match self {
+            ThemePreset::Ferrum => None,
+            // Light versions of the dark themes…
+            ThemePreset::Midnight => p(rgb(226, 232, 245), rgb(247, 249, 253), rgb(22, 30, 48), [52, 100, 230]),
+            ThemePreset::Graphite => p(rgb(232, 232, 234), rgb(250, 250, 250), rgb(30, 30, 32), [224, 128, 0]),
+            ThemePreset::Forest => p(rgb(222, 236, 226), rgb(246, 251, 247), rgb(22, 44, 30), [36, 145, 82]),
+            ThemePreset::Arctic => p(rgb(229, 233, 240), rgb(243, 245, 249), rgb(46, 52, 64), [94, 129, 172]),
+            ThemePreset::Plum => p(rgb(238, 228, 244), rgb(250, 246, 252), rgb(48, 30, 60), [150, 70, 180]),
+            ThemePreset::HighContrast => p(rgb(255, 255, 255), rgb(255, 255, 255), rgb(0, 0, 0), [0, 70, 200]),
+            // …and dark versions of the light ones.
+            ThemePreset::Paper => p(rgb(44, 40, 34), rgb(33, 30, 25), rgb(238, 230, 214), [222, 130, 70]),
+            ThemePreset::Sky => p(rgb(24, 34, 48), rgb(16, 24, 36), rgb(222, 234, 248), [90, 160, 255]),
+            ThemePreset::Rose => p(rgb(46, 28, 34), rgb(34, 20, 25), rgb(248, 228, 233), [240, 110, 150]),
+        }
+    }
+
+    fn native(self) -> Option<Palette> {
         let p = |dark, panel, surface, text, accent| Some(Palette { dark, panel, surface, text, accent });
         match self {
             ThemePreset::Ferrum => None,
@@ -87,12 +115,12 @@ impl ThemePreset {
         }
     }
 
-    /// Colours for the preview card in settings: (panel, surface, text, dark).
-    pub fn preview(self, ferrum_dark: bool) -> (Color32, Color32, Color32) {
-        match self.palette() {
+    /// Colours for the preview card in settings: (panel, surface, text), in light or dark mode.
+    pub fn preview(self, dark: bool) -> (Color32, Color32, Color32) {
+        match self.palette_for(dark) {
             Some(p) => (p.panel, p.surface, p.text),
             None => {
-                let v = if ferrum_dark { Visuals::dark() } else { Visuals::light() };
+                let v = if dark { Visuals::dark() } else { Visuals::light() };
                 (v.panel_fill, v.extreme_bg_color, v.text_color())
             },
         }
