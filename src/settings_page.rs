@@ -116,6 +116,7 @@ enum Setting {
     StartTitle,
     StartBackground,
     StartColor,
+    Gradient,
     StartImage,
     StartClock,
     StartBookmarks,
@@ -192,6 +193,7 @@ const ITEMS: &[Item] = &[
     item(S::Tabs, T::DownloadsButton, "Downloads button", "Always shown while something is downloading.", "toolbar", false),
     item(S::StartPage, T::StartTitle, "Title", "The big heading on the start page.", "name heading logo", false),
     item(S::StartPage, T::StartBackground, "Background", "", "wallpaper gradient colour image photo", false),
+    item(S::StartPage, T::Gradient, "Gradient", "Drag the dot to move where the colour comes from.", "gradient glow colour color intensity position spread fade", true),
     item(S::StartPage, T::StartColor, "Background colour", "", "wallpaper", false),
     item(S::StartPage, T::StartImage, "Background image", "PNG, JPEG, WebP, GIF or BMP. Large photos are scaled down.", "wallpaper photo picture", false),
     item(S::StartPage, T::StartSearch, "Search box", "", "search field", false),
@@ -419,6 +421,7 @@ impl Browser {
         match setting {
             Setting::CustomSearch => s.search_engine == SearchEngine::Custom,
             Setting::StartColor => s.start_background == StartBackground::Color,
+            Setting::Gradient => s.start_background == StartBackground::Gradient,
             Setting::StartImage => s.start_background == StartBackground::Image,
             _ => true,
         }
@@ -504,7 +507,7 @@ impl Browser {
             Setting::StartSearch => {
                 toggle(ui, &mut s.start_show_search, accent);
             },
-            Setting::ClockFormat => segmented(ui, &mut s.clock_24h, &[(false, "12-hour"), (true, "24-hour")]),
+            Setting::ClockFormat => segmented(ui, &mut s.clock_24h, &[(true, "24-hour"), (false, "12-hour")]),
             Setting::StartTiles => segmented(ui, &mut s.start_tiles, &[(32, "32"), (24, "24"), (16, "16"), (8, "8")]),
             Setting::BookmarkButton => {
                 toggle(ui, &mut s.show_bookmark_button, accent);
@@ -519,16 +522,85 @@ impl Browser {
                 egui::ComboBox::from_id_salt("start_bg")
                     .selected_text(match s.start_background {
                         StartBackground::Plain => "Plain",
-                        StartBackground::Gradient => "Accent gradient",
+                        StartBackground::Gradient => "Gradient",
                         StartBackground::Color => "Colour",
                         StartBackground::Image => "Image",
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut s.start_background, StartBackground::Plain, "Plain");
-                        ui.selectable_value(&mut s.start_background, StartBackground::Gradient, "Accent gradient");
+                        ui.selectable_value(&mut s.start_background, StartBackground::Gradient, "Gradient");
                         ui.selectable_value(&mut s.start_background, StartBackground::Color, "Colour");
                         ui.selectable_value(&mut s.start_background, StartBackground::Image, "Image");
                     });
+            },
+            Setting::Gradient => {
+                let g = crate::ui::Gradient::from_settings(s, accent);
+                ui.horizontal(|ui| {
+                    // A live preview; click or drag to move the colour's source.
+                    let (rect, resp) = ui.allocate_exact_size(vec2(220.0, 136.0), Sense::click_and_drag());
+                    let painter = ui.painter().with_clip_rect(rect);
+                    g.paint(&painter, rect);
+                    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color), StrokeKind::Inside);
+                    if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
+                        let v = (p - rect.min) / rect.size();
+                        s.gradient_source = [v.x.clamp(0.0, 1.0), v.y.clamp(0.0, 1.0)];
+                    }
+                    let dot = rect.min + vec2(s.gradient_source[0], s.gradient_source[1]) * rect.size();
+                    ui.painter().circle_filled(dot, 7.0, Color32::WHITE);
+                    ui.painter().circle_stroke(dot, 7.0, Stroke::new(2.0_f32, Color32::from_black_alpha(140)));
+                    resp.on_hover_cursor(egui::CursorIcon::Crosshair);
+
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        egui::Grid::new("gradient_grid").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                            ui.label("Colour");
+                            ui.horizontal(|ui| {
+                                let mut c = g.color;
+                                if ui.color_edit_button_srgba(&mut c).changed() {
+                                    s.gradient_color = Some([c.r(), c.g(), c.b()]);
+                                }
+                                if s.gradient_color.is_some() {
+                                    if ui.small_button("Use accent").clicked() {
+                                        s.gradient_color = None;
+                                    }
+                                } else {
+                                    ui.label(RichText::new("Accent colour").weak());
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Fades into");
+                            ui.horizontal(|ui| {
+                                let mut c = g.base;
+                                if ui.color_edit_button_srgba(&mut c).changed() {
+                                    s.gradient_base = Some([c.r(), c.g(), c.b()]);
+                                }
+                                if s.gradient_base.is_some() {
+                                    if ui.small_button("Automatic").clicked() {
+                                        s.gradient_base = None;
+                                    }
+                                } else {
+                                    ui.label(RichText::new("Automatic").weak());
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Intensity");
+                            ui.add(egui::Slider::new(&mut s.gradient_intensity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                            ui.end_row();
+                            ui.label("Spread");
+                            ui.add(egui::Slider::new(&mut s.gradient_spread, 0.2..=3.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                            ui.end_row();
+                            ui.label("Source");
+                            ui.horizontal(|ui| {
+                                for (label, pos) in [("Top", [0.5, 0.0]), ("Centre", [0.5, 0.5]), ("Bottom", [0.5, 1.0]), ("Top left", [0.0, 0.0]), ("Top right", [1.0, 0.0])] {
+                                    if ui.small_button(label).clicked() {
+                                        s.gradient_source = pos;
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        });
+                    });
+                });
             },
             Setting::StartColor => {
                 let mut c = Color32::from_rgb(s.start_color[0], s.start_color[1], s.start_color[2]);

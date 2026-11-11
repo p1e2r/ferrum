@@ -192,6 +192,14 @@ pub struct Settings {
     pub start_title: String,
     pub start_background: StartBackground,
     pub start_color: [u8; 3],
+    /// The gradient background: its colour (`None` = the accent colour), the
+    /// colour it fades into (`None` = a dark shade of it), how strong it is at
+    /// its source (0–1), how far it spreads, and where the source is (0–1 across, 0–1 down).
+    pub gradient_color: Option<[u8; 3]>,
+    pub gradient_base: Option<[u8; 3]>,
+    pub gradient_intensity: f32,
+    pub gradient_spread: f32,
+    pub gradient_source: [f32; 2],
     pub start_image: String,
     pub start_show_clock: bool,
     pub start_show_bookmarks: bool,
@@ -310,6 +318,11 @@ impl Default for Settings {
             start_title: "Ferrum".into(),
             start_background: StartBackground::default(),
             start_color: [40, 44, 58],
+            gradient_color: None,
+            gradient_base: None,
+            gradient_intensity: 1.0,
+            gradient_spread: 1.2,
+            gradient_source: [0.5, 0.0],
             start_image: String::new(),
             start_show_clock: false,
             start_show_bookmarks: true,

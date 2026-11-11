@@ -175,6 +175,74 @@ fn clamp_to_group(tabs: &[crate::browser::Tab], from: usize, target: usize) -> u
     if tabs[from].pinned { target.min(pinned.saturating_sub(1)) } else { target.max(pinned) }
 }
 
+/// The start page's gradient background: a glow of `color` from `source`
+/// fading into `base`.
+#[derive(Clone, Copy)]
+pub(crate) struct Gradient {
+    pub color: Color32,
+    pub base: Color32,
+    pub intensity: f32,
+    pub spread: f32,
+    /// 0–1 across and down the area.
+    pub source: egui::Vec2,
+}
+
+impl Gradient {
+    pub fn from_settings(s: &Settings, accent: Color32) -> Self {
+        let color = s.gradient_color.map_or(accent, |[r, g, b]| Color32::from_rgb(r, g, b));
+        Gradient {
+            color,
+            base: s.gradient_base.map_or_else(|| Self::auto_base(color), |[r, g, b]| Color32::from_rgb(r, g, b)),
+            intensity: s.gradient_intensity.clamp(0.0, 1.0),
+            spread: s.gradient_spread.clamp(0.2, 3.0),
+            source: vec2(s.gradient_source[0].clamp(0.0, 1.0), s.gradient_source[1].clamp(0.0, 1.0)),
+        }
+    }
+
+    /// A deep shade of the colour to fade into.
+    pub fn auto_base(c: Color32) -> Color32 {
+        Color32::from_rgb((c.r() as f32 * 0.18) as u8 + 10, (c.g() as f32 * 0.18) as u8 + 10, (c.b() as f32 * 0.18) as u8 + 22)
+    }
+
+    /// The colour at a point (0–1 across and down), for an area of the given aspect ratio.
+    fn at(&self, p: egui::Vec2, aspect: f32) -> Color32 {
+        let d = vec2((p.x - self.source.x) * aspect, p.y - self.source.y).length() / self.spread;
+        // Smooth falloff from the source.
+        let t = (1.0 - d).clamp(0.0, 1.0);
+        let t = t * t * (3.0 - 2.0 * t);
+        crate::theme::mix(self.base, self.color, t * self.intensity)
+    }
+
+    /// Whether text on it should be light.
+    pub fn is_dark(&self) -> bool {
+        let mid = self.at(vec2(0.5, 0.45), 1.6);
+        (mid.r() as u32 * 299 + mid.g() as u32 * 587 + mid.b() as u32 * 114) / 1000 < 150
+    }
+
+    pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect) {
+        // A grid of coloured vertices: smooth enough at any size, and cheap.
+        const COLS: u32 = 32;
+        const ROWS: u32 = 20;
+        let aspect = rect.width() / rect.height().max(1.0);
+        let mut mesh = egui::Mesh::default();
+        for j in 0..=ROWS {
+            for i in 0..=COLS {
+                let p = vec2(i as f32 / COLS as f32, j as f32 / ROWS as f32);
+                mesh.colored_vertex(rect.min + p * rect.size(), self.at(p, aspect));
+            }
+        }
+        for j in 0..ROWS {
+            for i in 0..COLS {
+                let a = j * (COLS + 1) + i;
+                let b = a + COLS + 1;
+                mesh.add_triangle(a, a + 1, b);
+                mesh.add_triangle(a + 1, b + 1, b);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
 /// A tab's close button.
 const CLOSE_SIZE: f32 = 22.0;
 
@@ -1048,21 +1116,9 @@ impl Browser {
                 light_text = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 < 140;
             },
             StartBackground::Gradient => {
-                let top = accent;
-                let bottom = Color32::from_rgb(
-                    (accent.r() as f32 * 0.25) as u8 + 10,
-                    (accent.g() as f32 * 0.25) as u8 + 10,
-                    (accent.b() as f32 * 0.25) as u8 + 30,
-                );
-                let mut mesh = egui::Mesh::default();
-                mesh.colored_vertex(rect.left_top(), top);
-                mesh.colored_vertex(rect.right_top(), top);
-                mesh.colored_vertex(rect.left_bottom(), bottom);
-                mesh.colored_vertex(rect.right_bottom(), bottom);
-                mesh.add_triangle(0, 1, 2);
-                mesh.add_triangle(1, 2, 3);
-                painter.add(egui::Shape::mesh(mesh));
-                light_text = true;
+                let g = Gradient::from_settings(&settings, accent);
+                g.paint(&painter, rect);
+                light_text = g.is_dark();
             },
             StartBackground::Image => match self.start_image_texture(ui.ctx()) {
                 Some(tex) => {
