@@ -286,6 +286,8 @@ pub struct Browser {
     pub(crate) custom_title_bar_at_start: bool,
     on_edge: Option<winit::window::ResizeDirection>,
     pub(crate) quit_requested: bool,
+    /// The light/dark mode last given to pages (for `prefers-color-scheme`).
+    page_dark: Option<bool>,
 
     // Page geometry (egui points) and input
     pub(crate) content_rect: egui::Rect,
@@ -416,6 +418,7 @@ impl Browser {
             custom_title_bar_at_start: custom_title_bar,
             on_edge: None,
             quit_requested: false,
+            page_dark: None,
             content_rect: egui::Rect::NOTHING,
             ppp: window.scale_factor() as f32,
             modifiers: ModifiersState::empty(),
@@ -533,6 +536,11 @@ impl Browser {
         match builder.build_as_child(&*self.window) {
             Ok(webview) => {
                 crate::adblock::attach(&webview);
+                #[cfg(target_os = "windows")]
+                if let Some(dark) = self.page_dark {
+                    use wry::WebViewExtWindows;
+                    let _ = webview.set_theme(if dark { wry::Theme::Dark } else { wry::Theme::Light });
+                }
                 let zoom = self.profile.settings.default_zoom;
                 if (zoom - 1.0).abs() > f32::EPSILON {
                     let _ = webview.zoom(zoom as f64);
@@ -1710,6 +1718,33 @@ impl Browser {
             self.page_unfocused = true;
         } else if !interface_has_keyboard {
             self.page_unfocused = false;
+        }
+    }
+
+    /// Pages follow the interface's light or dark mode (`prefers-color-scheme`),
+    /// so sites like Google switch to their dark look with Ferrum.
+    pub(crate) fn apply_page_theme(&mut self, dark: bool) {
+        if self.page_dark == Some(dark) {
+            return;
+        }
+        self.page_dark = Some(dark);
+        // macOS and Windows: the engine follows the window's appearance. "System"
+        // with the Ferrum theme keeps following the OS; anything else is set.
+        let follows_system = self.profile.settings.theme_preset == crate::theme::ThemePreset::Ferrum
+            && self.profile.settings.theme == crate::profile::ThemeChoice::System;
+        let theme = if dark { winit::window::Theme::Dark } else { winit::window::Theme::Light };
+        self.window.set_theme(if follows_system { None } else { Some(theme) });
+        #[cfg(target_os = "windows")]
+        for webview in self.tabs.iter().filter_map(|t| t.webview.as_ref()) {
+            use wry::WebViewExtWindows;
+            let _ = webview.set_theme(if dark { wry::Theme::Dark } else { wry::Theme::Light });
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::GtkSettingsExt;
+            if let Some(settings) = gtk::Settings::default() {
+                settings.set_gtk_application_prefer_dark_theme(dark);
+            }
         }
     }
 

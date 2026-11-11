@@ -182,6 +182,7 @@ impl Browser {
             ctx.request_repaint();
         }
         self.ppp = ctx.pixels_per_point();
+        self.apply_page_theme(ctx.theme() == egui::Theme::Dark);
 
         let chrome = !self.window_fullscreen;
         let vertical = self.profile.settings.tab_layout == TabLayout::Vertical;
