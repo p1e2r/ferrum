@@ -124,6 +124,7 @@ enum Setting {
     SleepTabs,
     BookmarkFile,
     CheckUpdates,
+    TitleBar,
 }
 
 struct Item {
@@ -152,6 +153,7 @@ const ITEMS: &[Item] = &[
     item(S::Appearance, T::UiScale, "Interface size", "Size of tabs, toolbar and menus. Doesn't affect pages; use page zoom for that.", "scale zoom ui bigger smaller text size", false),
     item(S::Appearance, T::Density, "Density", "Compact fits more on screen.", "compact comfortable spacing padding", false),
     item(S::Appearance, T::Roundness, "Corner rounding", "How rounded buttons, tabs and fields are.", "radius corners square", false),
+    item(S::Tabs, T::TitleBar, "Tabs in the title bar", "Like Chrome: no system title bar, the tabs sit at the top of the window with Ferrum's own minimise, maximise and close buttons. Drag the empty space next to the tabs to move the window.", "window titlebar decorations frame close button minimize maximize chrome", false),
     item(S::Tabs, T::TabLayout, "Tab position", "Along the top, or a list down the side.", "vertical tabs sidebar horizontal", false),
     item(S::Tabs, T::SleepTabs, "Sleeping tabs", "Unload tabs you haven't used for a while to save memory and battery. They reload when you select them. Pinned tabs and tabs playing sound stay awake.", "memory performance discard suspend battery", false),
     item(S::Tabs, T::BookmarksBar, "Bookmarks bar", "Show your bookmarks under the toolbar. Ctrl+Shift+B.", "favourites favorites", false),
@@ -676,6 +678,19 @@ impl Browser {
                         self.export_bookmarks();
                     }
                 });
+            },
+            Setting::TitleBar => {
+                let before = s.custom_title_bar;
+                toggle(ui, &mut s.custom_title_bar, accent);
+                let now = s.custom_title_bar;
+                if cfg!(target_os = "macos") {
+                    if now != self.custom_title_bar_at_start {
+                        ui.label(RichText::new("Restart Ferrum to apply").weak().size(11.0));
+                    }
+                } else if now != before {
+                    self.window.set_decorations(!now);
+                    self.custom_title_bar_at_start = now;
+                }
             },
             Setting::CheckUpdates => {
                 toggle(ui, &mut s.check_updates, accent);

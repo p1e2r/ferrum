@@ -31,6 +31,9 @@ pub enum Icon {
     Shield,
     Reader,
     Code,
+    Minimize,
+    Maximize,
+    Restore,
 }
 
 /// A square icon button. Returns the click response.
@@ -57,6 +60,77 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, size: f32, enabled: bool, tooltip: &
     }
 
     response.on_hover_text(tooltip)
+}
+
+/// A tab's close button, drawn like Chrome's: a small, thin ✕ that gets a
+/// round grey background on hover and darker when pressed.
+pub fn tab_close_button(ui: &mut Ui, size: f32, tooltip: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.visuals();
+        let text = visuals.strong_text_color();
+        // The tab's own click area lies on top of this button, so work out
+        // hovering from the pointer position rather than egui's hover state.
+        let hovered = ui.rect_contains_pointer(rect);
+        if hovered {
+            let pressed = ui.input(|i| i.pointer.primary_down());
+            ui.painter().circle_filled(rect.center(), size * 0.5, text.gamma_multiply(if pressed { 0.28 } else { 0.16 }));
+        }
+        let color = if hovered { text } else { visuals.text_color() };
+        let d = size * 0.19;
+        let c = rect.center();
+        let s = Stroke::new(1.3_f32, color);
+        ui.painter().line_segment([c - vec2(d, d), c + vec2(d, d)], s);
+        ui.painter().line_segment([c + vec2(-d, d), c + vec2(d, -d)], s);
+    }
+    response.on_hover_text(tooltip)
+}
+
+/// What a click on a window button asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WindowButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+/// Chrome-style minimise / maximise / close buttons, filling `rect` from the
+/// right. Close turns red on hover. Returns the button that was clicked.
+pub fn window_buttons(ui: &mut Ui, rect: Rect, maximized: bool) -> Option<WindowButton> {
+    let width = rect.width() / 3.0;
+    let mut clicked = None;
+    let buttons = [
+        (WindowButton::Minimize, Icon::Minimize, "Minimise"),
+        (WindowButton::Maximize, if maximized { Icon::Restore } else { Icon::Maximize }, if maximized { "Restore" } else { "Maximise" }),
+        (WindowButton::Close, Icon::Close, "Close"),
+    ];
+    for (i, (button, icon, tip)) in buttons.into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(rect.left() + width * i as f32, rect.top()), vec2(width, rect.height()));
+        let resp = ui.interact(r, ui.id().with(("window_button", i)), Sense::click()).on_hover_text(tip);
+        let text = ui.visuals().strong_text_color();
+        let mut color = text;
+        if resp.hovered() {
+            let fill = if button == WindowButton::Close {
+                color = Color32::WHITE;
+                if resp.is_pointer_button_down_on() { Color32::from_rgb(241, 112, 122) } else { Color32::from_rgb(232, 17, 35) }
+            } else {
+                text.gamma_multiply(if resp.is_pointer_button_down_on() { 0.2 } else { 0.1 })
+            };
+            ui.painter().rect_filled(r, 0.0, fill);
+        }
+        let glyph = Rect::from_center_size(r.center(), Vec2::splat(10.0));
+        if matches!(icon, Icon::Close) {
+            let s = Stroke::new(1.0_f32, color);
+            ui.painter().line_segment([glyph.left_top(), glyph.right_bottom()], s);
+            ui.painter().line_segment([glyph.left_bottom(), glyph.right_top()], s);
+        } else {
+            paint_icon(ui, icon, glyph, color);
+        }
+        if resp.clicked() {
+            clicked = Some(button);
+        }
+    }
+    clicked
 }
 
 /// A non-interactive icon of `size`, for use inside rows and labels.
@@ -243,6 +317,22 @@ pub fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
                 let y = r.top() + h * (0.1 + i as f32 * 0.27);
                 p.line_segment([pos2(r.left(), y), pos2(r.left() + w * k, y)], s);
             }
+        },
+        Icon::Minimize => {
+            p.line_segment([pos2(r.left(), c.y), pos2(r.right(), c.y)], Stroke::new(1.0_f32, color));
+        },
+        Icon::Maximize => {
+            p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, color), egui::StrokeKind::Inside);
+        },
+        Icon::Restore => {
+            let back = Rect::from_min_max(pos2(r.left() + w * 0.25, r.top()), pos2(r.right(), r.bottom() - h * 0.25));
+            let front = Rect::from_min_max(pos2(r.left(), r.top() + h * 0.25), pos2(r.right() - w * 0.25, r.bottom()));
+            let thin = Stroke::new(1.0_f32, color);
+            p.line_segment([back.left_top(), back.right_top()], thin);
+            p.line_segment([back.right_top(), back.right_bottom()], thin);
+            p.line_segment([back.left_top(), pos2(back.left(), front.top())], thin);
+            p.line_segment([pos2(front.right(), back.bottom()), back.right_bottom()], thin);
+            p.rect_stroke(front, 0.0, thin, egui::StrokeKind::Inside);
         },
         Icon::Code => {
             p.line_segment([pos2(r.left() + w * 0.3, r.top() + h * 0.15), pos2(r.left(), c.y)], s);

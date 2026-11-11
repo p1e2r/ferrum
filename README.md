@@ -44,6 +44,7 @@ A fast, native desktop web browser written in Rust.
 | Bookmarks import/export | HTML bookmark files from/to Firefox, Chrome, Edge, Safari |
 | Updates | Checks GitHub once a day for a newer Ferrum (can be turned off) |
 | Pinch zoom | Trackpad pinch zooms the page |
+| Title bar | Like Chrome: tabs sit in the title bar with Ferrum's own minimise / maximise / close buttons (close turns red on hover), drag the empty strip to move the window, double-click to maximise, resize from the window edges. Round-hover ✕ on tabs. On macOS the traffic lights stay over a transparent title bar. Can be switched back to the system title bar in settings |
 
 ### Efficiency
 

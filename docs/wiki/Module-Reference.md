@@ -132,4 +132,6 @@ After drawing, if any setting changed the profile is marked for saving and `Brow
 
 ## `icons.rs` — icons
 
-`Icon` (Back, Forward, Reload, Stop, Home, Plus, Close, Menu, Star, StarFilled, Download, Up, Down, Warning, History, Gear, Lock, Info, Speaker, Muted, Pin, Shield, Reader, Code), `icon_button(ui, icon, size, enabled, tooltip)`, `icon` and `paint_icon`. Icons are drawn from line segments and polygons, so they're crisp at any scale and need no image or icon-font files.
+`Icon` (Back, Forward, Reload, Stop, Home, Plus, Close, Menu, Star, StarFilled, Download, Up, Down, Warning, History, Gear, Lock, Info, Speaker, Muted, Pin, Shield, Reader, Code), `icon_button(ui, icon, size, enabled, tooltip)`, `icon` and `paint_icon`; `tab_close_button` (Chrome-style ✕ with a round hover) and `window_buttons` (minimise / maximise-restore / close, close red on hover).
+
+**Custom title bar.** With `custom_title_bar` on, the window is created without system decorations (on macOS: transparent, full-size title bar, so the traffic lights float over the tab strip). `Browser::title_bar_area` turns the empty strip right of the tabs into a drag handle (`Window::drag_window`, double-click maximises, right-click opens the system window menu) and draws `window_buttons`; with tabs down the side, `draw_title_bar` adds a slim bar for them. `Browser::handle_window_edges` provides resizing from the edges, which undecorated windows otherwise lack. Icons are drawn from line segments and polygons, so they're crisp at any scale and need no image or icon-font files.

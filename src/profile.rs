@@ -187,6 +187,9 @@ pub struct Settings {
     pub reader_font_size: f32,
     pub reader_theme: ReaderTheme,
     pub reader_width: f32,
+    /// Draw Ferrum's own title bar (tabs in the title bar, Chrome-style window
+    /// buttons) instead of the system one.
+    pub custom_title_bar: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +250,7 @@ impl Default for Settings {
             reader_font_size: 19.0,
             reader_theme: ReaderTheme::Auto,
             reader_width: 720.0,
+            custom_title_bar: true,
         }
     }
 }

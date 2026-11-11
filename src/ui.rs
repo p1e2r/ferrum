@@ -169,6 +169,9 @@ fn clamp_to_group(tabs: &[crate::browser::Tab], from: usize, target: usize) -> u
     if tabs[from].pinned { target.min(pinned.saturating_sub(1)) } else { target.max(pinned) }
 }
 
+/// Width of the minimise / maximise / close group, as in Chrome on Windows.
+const WINDOW_BUTTONS_WIDTH: f32 = 46.0 * 3.0;
+
 enum ControlOutcome {
     Keep,
     Confirm,
@@ -205,6 +208,8 @@ impl Browser {
         if chrome {
             if !vertical {
                 self.draw_tab_strip(ui);
+            } else if self.custom_title_bar() {
+                self.draw_title_bar(ui);
             }
             self.draw_toolbar(ui);
             if self.profile.settings.show_bookmarks_bar && !self.profile.bookmarks.is_empty() {
@@ -483,7 +488,7 @@ impl Browser {
                                 let text = RichText::new(tab.title()).size(13.0);
                                 ui.add(egui::Label::new(if selected { text.strong() } else { text }).truncate().selectable(false));
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    close_rect = Some(icon_button(ui, Icon::Close, 18.0, true, "Close tab").rect);
+                                    close_rect = Some(crate::icons::tab_close_button(ui, 18.0, "Close tab (Ctrl+W)").rect);
                                     if tab.playing || tab.muted {
                                         let i = if tab.muted { Icon::Muted } else { Icon::Speaker };
                                         speaker_rect = Some(icon_button(ui, i, 18.0, true, "Mute / unmute tab").rect);
@@ -538,6 +543,69 @@ impl Browser {
         }
         if new_tab {
             self.new_tab();
+        }
+    }
+
+    pub(crate) fn custom_title_bar(&self) -> bool {
+        self.profile.settings.custom_title_bar && self.custom_title_bar_at_start
+    }
+
+    /// The empty part of the title bar (drag to move the window, double-click
+    /// to maximise) and, except on macOS, the window buttons at its right.
+    fn title_bar_area(&mut self, ui: &mut Ui, strip: egui::Rect, buttons_width: f32) -> Option<crate::icons::WindowButton> {
+        let buttons = egui::Rect::from_min_max(pos2(strip.right() - buttons_width, strip.top()), pos2(strip.right(), strip.top() + 32.0_f32.min(strip.height())));
+        let drag = egui::Rect::from_min_max(pos2(ui.cursor().left() + 4.0, strip.top()), pos2(buttons.left(), strip.bottom()));
+        if drag.width() > 0.0 {
+            let resp = ui.interact(drag, Id::new("title_bar_drag"), Sense::click_and_drag());
+            if resp.drag_started() {
+                let _ = self.window.drag_window();
+            }
+            if resp.double_clicked() {
+                self.window.set_maximized(!self.window.is_maximized());
+            }
+            if resp.secondary_clicked() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    self.window.show_window_menu(winit::dpi::LogicalPosition::new(p.x, p.y));
+                }
+            }
+        }
+        if buttons_width > 0.0 {
+            crate::icons::window_buttons(ui, buttons, self.window.is_maximized())
+        } else {
+            None
+        }
+    }
+
+    fn window_button(&mut self, button: crate::icons::WindowButton) {
+        use crate::icons::WindowButton;
+        match button {
+            WindowButton::Minimize => self.window.set_minimized(true),
+            WindowButton::Maximize => self.window.set_maximized(!self.window.is_maximized()),
+            WindowButton::Close => self.request_quit(),
+        }
+    }
+
+    /// A slim title bar for the "tabs down the side" layout, which has no tab strip to use.
+    fn draw_title_bar(&mut self, ui: &mut Ui) {
+        let buttons_width = if cfg!(target_os = "macos") { 0.0 } else { WINDOW_BUTTONS_WIDTH };
+        let mut action = None;
+        egui::Panel::top("title_bar")
+            .exact_size(30.0)
+            .frame(Frame::new().fill(ui.visuals().panel_fill))
+            .show_separator_line(false)
+            .show_inside(ui, |ui| {
+                let strip = ui.max_rect();
+                let title = self.last_title.clone();
+                ui.painter().text(strip.center(), Align2::CENTER_CENTER, title, FontId::proportional(12.0), ui.visuals().weak_text_color());
+                ui.horizontal(|ui| {
+                    if cfg!(target_os = "macos") {
+                        ui.add_space(70.0);
+                    }
+                    action = self.title_bar_area(ui, strip, buttons_width);
+                });
+            });
+        if let Some(action) = action {
+            self.window_button(action);
         }
     }
 
@@ -627,16 +695,28 @@ impl Browser {
         let accent = self.accent();
         let (mut dragging, mut dropped, mut moved): (Option<usize>, Option<usize>, Option<(usize, usize)>) = (None, None, None);
 
+        let custom_bar = self.custom_title_bar();
+        let buttons_width = if custom_bar && !cfg!(target_os = "macos") { WINDOW_BUTTONS_WIDTH } else { 0.0 };
+        let mut title_bar_action = None;
+
         egui::Panel::top("tabs")
             .frame(Frame::new().fill(fill).inner_margin(Margin { left: 6, right: 6, top: 6, bottom: 0 }))
             .show_separator_line(false)
             .show_inside(ui, |ui| {
+                let strip = ui.max_rect().expand2(vec2(6.0, 0.0)).with_min_y(ui.max_rect().top() - 6.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
+                    if custom_bar && cfg!(target_os = "macos") {
+                        // Room for the traffic-light buttons in the transparent title bar.
+                        ui.add_space(70.0);
+                    }
                     if private {
                         ui.label(RichText::new(" Private ").size(11.0).strong().color(Color32::WHITE).background_color(Color32::from_rgb(110, 60, 160)));
                     }
-                    let available = ui.available_width() - 40.0;
+                    // Leave room for the new-tab button, the window buttons and a
+                    // patch of empty strip to drag the window by.
+                    let drag_room = if custom_bar { 48.0 } else { 0.0 };
+                    let available = ui.available_width() - 40.0 - buttons_width - drag_room;
                     let pinned_count = self.tabs.iter().filter(|t| t.pinned).count();
                     const PINNED_WIDTH: f32 = 42.0;
                     let unpinned = (self.tabs.len() - pinned_count).max(1) as f32;
@@ -684,7 +764,7 @@ impl Browser {
                                             ui.add(egui::Label::new(text).truncate().selectable(false));
                                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                                 if width > 90.0 || selected {
-                                                    close_rect = Some(icon_button(ui, Icon::Close, 18.0, true, "Close tab (Ctrl+W)").rect);
+                                                    close_rect = Some(crate::icons::tab_close_button(ui, 18.0, "Close tab (Ctrl+W)").rect);
                                                 }
                                             });
                                         });
@@ -730,8 +810,14 @@ impl Browser {
                     if icon_button(ui, Icon::Plus, 26.0, true, "New tab (Ctrl+T)").clicked() {
                         new_tab = true;
                     }
+                    if custom_bar {
+                        title_bar_action = self.title_bar_area(ui, strip, buttons_width);
+                    }
                 });
             });
+        if let Some(action) = title_bar_action {
+            self.window_button(action);
+        }
 
         if let Some((from, to)) = moved {
             self.move_tab(from, to);
@@ -2020,7 +2106,12 @@ impl Browser {
         self.mouse_physical().map(|(x, y)| pos2(x / self.ppp, y / self.ppp))
     }
 
+    pub(crate) fn request_quit(&mut self) {
+        self.quit_requested = true;
+        self.window.request_redraw();
+    }
+
     pub(crate) fn wants_quit(&self) -> bool {
-        self.egui_ctx().is_some_and(|ctx| ctx.memory(|m| m.data.get_temp::<bool>(Id::new("quit")).unwrap_or(false)))
+        self.quit_requested || self.egui_ctx().is_some_and(|ctx| ctx.memory(|m| m.data.get_temp::<bool>(Id::new("quit")).unwrap_or(false)))
     }
 }

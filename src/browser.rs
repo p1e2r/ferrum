@@ -501,7 +501,7 @@ pub struct Browser {
     pub(crate) print_job: Option<print::Job>,
     /// When the interface next needs a repaint (set by egui's repaint callback).
     repaint_at: Arc<Mutex<Option<Instant>>>,
-    last_title: String,
+    pub(crate) last_title: String,
     /// The engine's own User-Agent, used when no custom one is set.
     default_user_agent: String,
     /// Engine preferences last sent to Servo, to send only changes.
@@ -523,6 +523,11 @@ pub struct Browser {
     pending_source: Option<Rc<RefCell<Option<(String, String)>>>>,
     pending_screenshot: Option<Rc<RefCell<Option<Result<std::path::PathBuf, String>>>>>,
     pub(crate) last_screenshot: Option<std::path::PathBuf>,
+    /// Whether the window was created without the system title bar. On macOS
+    /// that can only be chosen when the window is made, so changes apply after a restart.
+    pub(crate) custom_title_bar_at_start: bool,
+    on_edge: Option<winit::window::ResizeDirection>,
+    pub(crate) quit_requested: bool,
     console_results: Rc<RefCell<Vec<(WebViewId, Level, String)>>>,
 
     // Page geometry (egui points) and input
@@ -544,10 +549,23 @@ impl Browser {
         crate::timing("profile loaded");
 
         let title = if private { format!("{APP_NAME} (Private)") } else { APP_NAME.to_string() };
+        let custom_title_bar = profile.settings.custom_title_bar;
         let attributes = Window::default_attributes()
             .with_title(title)
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 840.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 320.0));
+        // Like Chrome, put the tabs in the title bar and draw our own window buttons.
+        // On macOS the system's traffic lights stay, over a transparent title bar.
+        #[cfg(target_os = "macos")]
+        let attributes = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attributes
+                .with_titlebar_transparent(custom_title_bar)
+                .with_title_hidden(custom_title_bar)
+                .with_fullsize_content_view(custom_title_bar)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let attributes = attributes.with_decorations(!custom_title_bar);
         let window = Rc::new(event_loop.create_window(attributes).expect("create window"));
         crate::timing("window created");
         // Window/taskbar icon on Windows and Linux (macOS uses the app bundle's icon).
@@ -689,6 +707,9 @@ impl Browser {
             pending_source: None,
             pending_screenshot: None,
             last_screenshot: None,
+            custom_title_bar_at_start: custom_title_bar,
+            on_edge: None,
+            quit_requested: false,
             console_results: Rc::default(),
             content_rect: egui::Rect::NOTHING,
             ppp: 1.0,
@@ -1304,6 +1325,10 @@ impl Browser {
             _ => {},
         }
 
+        if self.handle_window_edges(&event) {
+            return true;
+        }
+
         // Browser shortcuts win over both the interface and the page.
         if let WindowEvent::KeyboardInput { event: key, .. } = &event {
             if key.state == ElementState::Pressed && self.handle_shortcut(key) {
@@ -1322,6 +1347,57 @@ impl Browser {
 
         self.forward_to_page(&event, response.consumed || wants_keyboard, pointer_on_ui);
         true
+    }
+
+    /// Without the system title bar the window has no system borders either, so
+    /// Ferrum resizes it from its edges itself. Returns true if it took the event.
+    fn handle_window_edges(&mut self, event: &WindowEvent) -> bool {
+        if cfg!(target_os = "macos") || !self.custom_title_bar_at_start || self.window.is_maximized() || self.window_fullscreen || self.page_fullscreen {
+            if self.on_edge.take().is_some() {
+                self.window.set_cursor(CursorIcon::Default);
+            }
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let size = self.window.inner_size();
+                let border = (5.0 * self.window.scale_factor()).max(4.0);
+                let (x, y, w, h) = (position.x, position.y, size.width as f64, size.height as f64);
+                let (left, right, top, bottom) = (x < border, x > w - border, y < border, y > h - border);
+                use winit::window::ResizeDirection as R;
+                let edge = match (left, right, top, bottom) {
+                    (true, _, true, _) => Some(R::NorthWest),
+                    (_, true, true, _) => Some(R::NorthEast),
+                    (true, _, _, true) => Some(R::SouthWest),
+                    (_, true, _, true) => Some(R::SouthEast),
+                    (true, ..) => Some(R::West),
+                    (_, true, ..) => Some(R::East),
+                    (_, _, true, _) => Some(R::North),
+                    (.., true) => Some(R::South),
+                    _ => None,
+                };
+                if edge != self.on_edge {
+                    let icon = match edge {
+                        Some(R::West | R::East) => CursorIcon::EwResize,
+                        Some(R::North | R::South) => CursorIcon::NsResize,
+                        Some(R::NorthWest | R::SouthEast) => CursorIcon::NwseResize,
+                        Some(R::NorthEast | R::SouthWest) => CursorIcon::NeswResize,
+                        None => CursorIcon::Default,
+                    };
+                    self.window.set_cursor(icon);
+                    self.on_edge = edge;
+                }
+                false
+            },
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => match self.on_edge {
+                Some(direction) => {
+                    let _ = self.window.drag_resize_window(direction);
+                    true
+                },
+                None => false,
+            },
+            _ => false,
+        }
     }
 
     fn handle_shortcut(&mut self, key: &KeyEvent) -> bool {
