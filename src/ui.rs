@@ -3,7 +3,6 @@
 
 //! Everything the user sees around the page, drawn natively with egui.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use egui::text::{CCursor, CCursorRange};
@@ -11,12 +10,9 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Key as EKey, Layout, Margin,
     RichText, Sense, Ui, Vec2, pos2, vec2,
 };
-use egui_glow::CallbackFn;
-use euclid::{Point2D, Rect as ERect, Size2D};
-use servo::{ContextMenuAction, ContextMenuItem, PermissionFeature, RgbColor, SelectElementOptionOrOptgroup, SimpleDialog};
 use url::Url;
 
-use crate::browser::{APP_NAME, Browser, PageControl, SidePanel};
+use crate::browser::{APP_NAME, Browser, SidePanel};
 use crate::downloads::{Status, human_size, open_path};
 use crate::icons::{Icon, icon, icon_button};
 use crate::profile::{Settings, StartBackground, TabLayout, ThemeChoice};
@@ -28,7 +24,7 @@ pub fn accent(settings: &Settings) -> Color32 {
 
 /// A hash of every setting that affects the interface's look, so the style is
 /// only rebuilt when one of them changes.
-fn style_key(s: &Settings) -> u64 {
+pub fn style_key(s: &Settings) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness).hash(&mut h);
@@ -98,10 +94,6 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn host_of(url: &Option<Url>) -> String {
-    url.as_ref().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| "This page".into())
-}
-
 /// Letter tile used where a site has no favicon: the first letter of `label`,
 /// on a colour derived from `seed` (usually the URL) so each site keeps its colour.
 fn letter_icon(ui: &mut Ui, label: &str, seed: &str, size: f32) {
@@ -116,7 +108,7 @@ fn letter_icon(ui: &mut Ui, label: &str, seed: &str, size: f32) {
 }
 
 #[derive(Clone, Copy)]
-enum TabAction {
+pub(crate) enum TabAction {
     Reload,
     Duplicate,
     Bookmark,
@@ -127,27 +119,31 @@ enum TabAction {
     CloseRight,
 }
 
-/// Right-click menu shared by both tab layouts.
-fn tab_menu(resp: &egui::Response, index: usize, count: usize, tab: &crate::browser::Tab, out: &mut Option<(usize, TabAction)>) {
-    let (pinned, muted) = (tab.pinned, tab.muted);
-    resp.context_menu(|ui| {
-        ui.set_min_width(180.0);
-        let mut item = |ui: &mut Ui, label: &str, action: TabAction, enabled: bool| {
-            if ui.add_enabled(enabled, egui::Button::new(label).frame(false)).clicked() {
-                *out = Some((index, action));
-                ui.close();
-            }
-        };
-        item(ui, "Reload", TabAction::Reload, true);
-        item(ui, "Duplicate", TabAction::Duplicate, true);
-        item(ui, "Bookmark", TabAction::Bookmark, true);
-        item(ui, if pinned { "Unpin tab" } else { "Pin tab" }, TabAction::Pin, true);
-        item(ui, if muted { "Unmute tab" } else { "Mute tab" }, TabAction::Mute, true);
-        ui.separator();
-        item(ui, "Close tab", TabAction::Close, true);
-        item(ui, "Close other tabs (keeps pinned)", TabAction::CloseOthers, count > 1);
-        item(ui, "Close tabs to the right", TabAction::CloseRight, index + 1 < count);
-    });
+/// Right-clicking a tab opens its menu (drawn in a popup window, see overlay_ui.rs).
+fn tab_menu(resp: &egui::Response, index: usize, open: &mut Option<(usize, egui::Pos2)>) {
+    if resp.secondary_clicked() {
+        *open = Some((index, resp.interact_pointer_pos().unwrap_or(resp.rect.left_bottom())));
+    }
+}
+
+/// The items of a tab's right-click menu. Returns the chosen action.
+pub(crate) fn tab_menu_items(ui: &mut Ui, index: usize, count: usize, pinned: bool, muted: bool) -> Option<TabAction> {
+    let mut out = None;
+    let mut item = |ui: &mut Ui, label: &str, action: TabAction, enabled: bool| {
+        if ui.add_enabled(enabled, egui::Button::new(label).frame(false).min_size(vec2(ui.available_width(), 24.0))).clicked() {
+            out = Some(action);
+        }
+    };
+    item(ui, "Reload", TabAction::Reload, true);
+    item(ui, "Duplicate", TabAction::Duplicate, true);
+    item(ui, "Bookmark", TabAction::Bookmark, true);
+    item(ui, if pinned { "Unpin tab" } else { "Pin tab" }, TabAction::Pin, true);
+    item(ui, if muted { "Unmute tab" } else { "Mute tab" }, TabAction::Mute, true);
+    ui.separator();
+    item(ui, "Close tab", TabAction::Close, true);
+    item(ui, "Close other tabs (keeps pinned)", TabAction::CloseOthers, count > 1);
+    item(ui, "Close tabs to the right", TabAction::CloseRight, index + 1 < count);
+    out
 }
 
 /// Where a dragged tab would land: the index of the first tab (other than the
@@ -172,18 +168,6 @@ fn clamp_to_group(tabs: &[crate::browser::Tab], from: usize, target: usize) -> u
 /// Width of the minimise / maximise / close group, as in Chrome on Windows.
 const WINDOW_BUTTONS_WIDTH: f32 = 46.0 * 3.0;
 
-enum ControlOutcome {
-    Keep,
-    Confirm,
-    Dismiss,
-    Select(Vec<usize>),
-    Menu(ContextMenuAction),
-    OpenInNewTab(Url),
-    Download(Url),
-    Copy(String),
-    Bookmark,
-}
-
 impl Browser {
     pub(crate) fn accent(&self) -> Color32 {
         accent(&self.profile.settings)
@@ -198,12 +182,8 @@ impl Browser {
             ctx.request_repaint();
         }
         self.ppp = ctx.pixels_per_point();
-        self.apply_theme(&ctx);
-        for i in 0..self.tabs.len() {
-            self.refresh_favicon(&ctx, i);
-        }
 
-        let chrome = !self.page_fullscreen && !self.window_fullscreen;
+        let chrome = !self.window_fullscreen;
         let vertical = self.profile.settings.tab_layout == TabLayout::Vertical;
         if chrome {
             if !vertical {
@@ -224,32 +204,17 @@ impl Browser {
             if self.panel != SidePanel::None {
                 self.draw_side_panel(ui);
             }
-            if self.devtools.open {
-                self.draw_devtools(ui);
-            }
         }
 
         if self.find.open {
-            if let Some(webview) = self.active_webview().cloned() {
-                self.find.search_if_changed(&webview, &self.window);
+            if let Some(webview) = self.tabs.get(self.active).and_then(|t| t.webview.as_ref()) {
+                self.find.search_if_changed(webview, &self.proxy);
             }
         }
 
         self.content_rect = ui.available_rect_before_wrap();
         self.draw_content(ui);
-        self.draw_page_controls(&ctx);
-        if self.print_job.is_some() {
-            self.draw_print_dialog(&ctx);
-        }
-        if self.site_info_open && chrome {
-            self.draw_site_info(&ctx);
-        }
-        if self.menu_open {
-            self.draw_menu(&ctx);
-        }
-        self.draw_notification(&ctx);
-        self.draw_search_blocked(&ctx);
-        self.draw_toast(&ctx);
+        self.request_popups(&ctx);
     }
 
     // ----- find in page -----------------------------------------------------
@@ -261,7 +226,7 @@ impl Browser {
             Close,
         }
         let mut act = Act::None;
-        let (current, total) = *self.find.result.borrow();
+        let (current, total) = self.find.result.lock().map(|r| *r).unwrap_or((0, 0));
         egui::Panel::top("find_bar")
             .frame(Frame::new().fill(ui.visuals().extreme_bg_color).inner_margin(Margin::symmetric(8, 4)))
             .show_inside(ui, |ui| {
@@ -313,145 +278,12 @@ impl Browser {
         }
     }
 
-    // ----- printing ---------------------------------------------------------
-
-    fn draw_print_dialog(&mut self, ctx: &egui::Context) {
-        let Some(job) = self.print_job.clone() else { return };
-        let accent = self.accent();
-        enum Act {
-            None,
-            Cancel,
-            Print,
-            Save,
-            Open,
-        }
-        let mut act = Act::None;
-        {
-            let mut j = job.borrow_mut();
-            let modal = egui::Modal::new(Id::new("print_dialog")).show(ctx, |ui| {
-                ui.set_width(380.0);
-                ui.label(RichText::new("Print").size(18.0).strong());
-                ui.label(RichText::new(truncate(&j.title, 60)).weak());
-                ui.add_space(8.0);
-                match j.stage.clone() {
-                    crate::print::Stage::Measuring | crate::print::Stage::Capturing => {
-                        let (done, of) = j.progress();
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().color(accent));
-                            ui.label(format!("Preparing pages… ({done} of {of} screens)"));
-                        });
-                        ui.add(egui::ProgressBar::new(done as f32 / of as f32).fill(accent));
-                        ui.add_space(8.0);
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Cancel").clicked() {
-                                act = Act::Cancel;
-                            }
-                        });
-                    },
-                    crate::print::Stage::Failed(e) => {
-                        ui.label(RichText::new(e).color(Color32::from_rgb(210, 80, 70)));
-                        if ui.button("Close").clicked() {
-                            act = Act::Cancel;
-                        }
-                    },
-                    crate::print::Stage::Ready => {
-                        ui.label(format!("{} page{} (A4)", j.pages, if j.pages == 1 { "" } else { "s" }));
-                        ui.add_space(6.0);
-                        if j.printers.is_empty() {
-                            ui.label(RichText::new("No printers found. Save as PDF, or open the PDF and print from your PDF viewer.").weak());
-                        } else {
-                            egui::Grid::new("print_opts").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                                ui.label("Printer");
-                                let selected = j.printers.get(j.printer).cloned().unwrap_or_default();
-                                egui::ComboBox::from_id_salt("printer").selected_text(selected).width(240.0).show_ui(ui, |ui| {
-                                    let names = j.printers.clone();
-                                    for (i, name) in names.iter().enumerate() {
-                                        ui.selectable_value(&mut j.printer, i, name);
-                                    }
-                                });
-                                ui.end_row();
-                                ui.label("Copies");
-                                ui.add(egui::DragValue::new(&mut j.copies).range(1..=99));
-                                ui.end_row();
-                            });
-                        }
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Save as PDF…").clicked() {
-                                act = Act::Save;
-                            }
-                            if ui.button("Open PDF").clicked() {
-                                act = Act::Open;
-                            }
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let can_print = !j.printers.is_empty();
-                                let print = if can_print {
-                                    egui::Button::new(RichText::new("Print").color(Color32::WHITE)).fill(accent)
-                                } else {
-                                    egui::Button::new("Print")
-                                };
-                                if ui.add_enabled(can_print, print).clicked() {
-                                    act = Act::Print;
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    act = Act::Cancel;
-                                }
-                            });
-                        });
-                    },
-                }
-            });
-            if modal.should_close() && matches!(act, Act::None) {
-                act = Act::Cancel;
-            }
-        }
-
-        let (pdf, printer, copies, title) = {
-            let j = job.borrow();
-            (j.pdf.clone(), j.printers.get(j.printer).cloned(), j.copies, j.title.clone())
-        };
-        match act {
-            Act::None => return,
-            Act::Cancel => {},
-            Act::Print => {
-                if let (Some(pdf), Some(printer)) = (&pdf, &printer) {
-                    match crate::print::send_to_printer(pdf, printer, copies) {
-                        Ok(()) => self.toast(format!("Sent to {printer}")),
-                        Err(e) => self.toast(format!("Printing failed: {e}")),
-                    }
-                }
-            },
-            Act::Save => {
-                if let Some(pdf) = &pdf {
-                    let name: String = title.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
-                    let dialog = rfd::FileDialog::new().set_file_name(format!("{}.pdf", name.trim())).add_filter("PDF", &["pdf"]);
-                    match dialog.save_file() {
-                        Some(target) => match std::fs::copy(pdf, &target) {
-                            Ok(_) => self.toast("Saved PDF"),
-                            Err(e) => self.toast(format!("Couldn't save: {e}")),
-                        },
-                        None => return,
-                    }
-                }
-            },
-            Act::Open => {
-                if let Some(pdf) = &pdf {
-                    open_path(pdf);
-                }
-                return;
-            },
-        }
-        self.print_job = None;
-    }
-
-    // ----- vertical tabs ----------------------------------------------------
-
     fn draw_vertical_tabs(&mut self, ui: &mut Ui) {
         let mut select = None;
         let mut close = None;
         let mut new_tab = false;
         let mut tab_action: Option<(usize, TabAction)> = None;
-        let count = self.tabs.len();
+        let mut menu_request: Option<(usize, egui::Pos2)> = None;
         let accent = self.accent();
         let private = self.profile.is_private();
         let (mut dragging, mut dropped, mut moved): (Option<usize>, Option<usize>, Option<(usize, usize)>) = (None, None, None);
@@ -499,7 +331,7 @@ impl Browser {
                         });
                         rects.push(resp.response.rect);
                         let resp = ui.interact(resp.response.rect, Id::new(("vtab", i)), Sense::click_and_drag()).on_hover_text(tab.title());
-                        tab_menu(&resp, i, count, tab, &mut tab_action);
+                        tab_menu(&resp, i, &mut menu_request);
                         // The whole-tab click area sits on top of the buttons, so tell them apart by position.
                         if resp.clicked() {
                             let at = |r: Option<egui::Rect>| r.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
@@ -533,6 +365,9 @@ impl Browser {
                     }
                 });
             });
+        if menu_request.is_some() {
+            self.tab_menu = menu_request;
+        }
         if let Some((from, to)) = moved {
             self.move_tab(from, to);
         } else if let Some((i, action)) = tab_action {
@@ -610,7 +445,7 @@ impl Browser {
         }
     }
 
-    fn tab_action(&mut self, i: usize, action: TabAction) {
+    pub(crate) fn tab_action(&mut self, i: usize, action: TabAction) {
         if i >= self.tabs.len() {
             return;
         }
@@ -619,13 +454,7 @@ impl Browser {
                 self.activate(i);
                 self.reload();
             },
-            TabAction::Duplicate => {
-                if let Some(url) = self.tabs[i].url() {
-                    let webview = self.create_webview(url);
-                    let zoom = self.tabs[i].zoom;
-                    self.insert_tab_after(i, webview, zoom);
-                }
-            },
+            TabAction::Duplicate => self.duplicate_tab(i),
             TabAction::Bookmark => {
                 if let Some(url) = self.tabs[i].url() {
                     let title = self.tabs[i].title();
@@ -670,8 +499,6 @@ impl Browser {
                 crate::browser::InternalPage::Source => Icon::Code,
             };
             icon(ui, i, 16.0, ui.visuals().strong_text_color());
-        } else if tab.crashed.is_some() {
-            icon(ui, Icon::Warning, 16.0, Color32::from_rgb(220, 60, 60));
         } else if tab.loading() {
             ui.add(egui::Spinner::new().size(14.0).color(self.accent()));
         } else if let Some(icon) = &tab.favicon {
@@ -689,7 +516,7 @@ impl Browser {
         let mut close = None;
         let mut new_tab = false;
         let mut tab_action: Option<(usize, TabAction)> = None;
-        let count = self.tabs.len();
+        let mut menu_request: Option<(usize, egui::Pos2)> = None;
         let fill = ui.visuals().panel_fill;
         let tab_fill = ui.visuals().extreme_bg_color;
         let private = self.profile.is_private();
@@ -773,7 +600,7 @@ impl Browser {
                                     rects.push(resp.response.rect);
                                     let resp = ui.interact(resp.response.rect, Id::new(("tab", i)), Sense::click_and_drag());
                                     let resp = resp.on_hover_text(tab.title());
-                                    tab_menu(&resp, i, count, tab, &mut tab_action);
+                                    tab_menu(&resp, i, &mut menu_request);
                                     // The whole-tab click area sits on top of the buttons, so tell them apart by position.
                                     if resp.clicked() {
                                         let at = |r: Option<egui::Rect>| r.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
@@ -820,6 +647,9 @@ impl Browser {
             self.window_button(action);
         }
 
+        if menu_request.is_some() {
+            self.tab_menu = menu_request;
+        }
         if let Some((from, to)) = moved {
             self.move_tab(from, to);
         } else if let Some((i, action)) = tab_action {
@@ -838,9 +668,9 @@ impl Browser {
 
     fn draw_toolbar(&mut self, ui: &mut Ui) {
         let fill = ui.visuals().extreme_bg_color;
-        let webview = self.active_webview().cloned();
-        let can_back = webview.as_ref().is_some_and(|w| w.can_go_back());
-        let can_forward = webview.as_ref().is_some_and(|w| w.can_go_forward());
+        let has_page = self.active_webview().is_some();
+        let can_back = self.can_go_back();
+        let can_forward = self.can_go_forward();
         let loading = self.active_tab().loading();
         let url = self.active_tab().url();
         let bookmarked = url.as_ref().is_some_and(|u| self.profile.is_bookmarked(u.as_str()));
@@ -854,7 +684,7 @@ impl Browser {
         );
         let button = if self.profile.settings.compact { 26.0 } else { 30.0 };
         let reader_on = self.active_tab().reader.is_some();
-        let blocked = webview.as_ref().map_or(0, |w| self.blocker.blocked_on(w.id(), w.url().as_ref().map_or("", |u| u.as_str())));
+        let blocked = self.active_tab().blocked;
         let (site_icon, site_color, site_tip) = match url.as_ref().map(|u| u.scheme()) {
             Some("https") => (Icon::Lock, None, "Connection is secure — site information".to_string()),
             Some("http") => (Icon::Warning, Some(Color32::from_rgb(200, 120, 30)), "Not secure — site information".to_string()),
@@ -865,7 +695,7 @@ impl Browser {
         let mut url_rect = egui::Rect::NOTHING;
         let mut url_focused = false;
 
-        egui::Panel::top("toolbar")
+        let toolbar = egui::Panel::top("toolbar")
             .frame(Frame::new().fill(fill).inner_margin(Margin::symmetric(8, 6)))
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -875,9 +705,9 @@ impl Browser {
                     if icon_button(ui, Icon::Forward, button, can_forward, "Forward (Alt+→)").clicked() {
                         self.go_forward();
                     }
-                    let (icon, tip) = if loading { (Icon::Stop, "Loading…") } else { (Icon::Reload, "Reload (Ctrl+R)") };
-                    if icon_button(ui, icon, button, webview.is_some(), tip).clicked() && !loading {
-                        self.reload();
+                    let (icon, tip) = if loading { (Icon::Stop, "Stop loading") } else { (Icon::Reload, "Reload (Ctrl+R)") };
+                    if icon_button(ui, icon, button, has_page, tip).clicked() {
+                        if loading { self.stop() } else { self.reload() }
                     }
                     if show_home && icon_button(ui, Icon::Home, button, true, "Home").clicked() {
                         self.go_home();
@@ -909,7 +739,7 @@ impl Browser {
                                 self.toggle_bookmark();
                             }
                         }
-                        if webview.is_some() {
+                        if has_page {
                             let on = reader_on;
                             let resp = icon_button(ui, Icon::Reader, button, true, if on { "Exit reader mode (F9)" } else { "Reader mode (F9)" });
                             if on {
@@ -964,7 +794,10 @@ impl Browser {
                             if self.focus_location {
                                 response.request_focus();
                                 self.focus_location = false;
+                            } else if self.blur_location {
+                                response.surrender_focus();
                             }
+                            self.blur_location = false;
                             if select_all {
                                 let mut state = output.state;
                                 let len = self.location.chars().count();
@@ -998,80 +831,22 @@ impl Browser {
                 });
             });
 
-        // Page-load progress line under the toolbar.
+        // Page-load progress line along the bottom of the toolbar (the page
+        // itself is a native view, so nothing can be drawn on it).
         if loading {
-            let rect = ui.available_rect_before_wrap();
+            let rect = toolbar.response.rect;
             let t = ui.input(|i| i.time) as f32;
             let w = rect.width();
             let x = rect.left() + ((t * 0.9).fract() * 1.4 - 0.4) * w;
-            let bar = egui::Rect::from_min_max(pos2(x.max(rect.left()), rect.top()), pos2((x + w * 0.4).min(rect.right()), rect.top() + 2.5));
+            let bar = egui::Rect::from_min_max(pos2(x.max(rect.left()), rect.bottom() - 2.5), pos2((x + w * 0.4).min(rect.right()), rect.bottom()));
             ui.painter().rect_filled(bar, 1.0, accent);
-            ui.ctx().request_repaint_after(Duration::from_millis(33));
+            // A modest frame rate keeps this cheap on slow machines.
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
-
-        let pointer_on_list = ui.ctx().input(|i| {
-            i.pointer.interact_pos().is_some_and(|p| self.suggestion_rect.contains(p))
-                && (i.pointer.any_down() || i.pointer.any_released())
+        ui.memory_mut(|m| {
+            m.data.insert_temp(Id::new("url_rect"), url_rect);
+            m.data.insert_temp(Id::new("url_focused"), url_focused);
         });
-        if self.editing && self.profile.settings.show_suggestions && (url_focused || pointer_on_list) {
-            self.draw_suggestions(ui.ctx(), url_rect);
-        } else {
-            self.suggestion_rect = egui::Rect::NOTHING;
-        }
-    }
-
-    fn draw_suggestions(&mut self, ctx: &egui::Context, url_rect: egui::Rect) {
-        let suggestions = self.profile.suggestions(&self.location, 7);
-        if suggestions.is_empty() {
-            return;
-        }
-        let n = suggestions.len();
-        ctx.input(|i| {
-            if i.key_pressed(EKey::ArrowDown) {
-                self.suggestion_index = Some(self.suggestion_index.map_or(0, |s| (s + 1).min(n - 1)));
-            }
-            if i.key_pressed(EKey::ArrowUp) {
-                self.suggestion_index = self.suggestion_index.and_then(|s| s.checked_sub(1));
-            }
-        });
-        let mut chosen = None;
-        let area = egui::Area::new(Id::new("suggestions"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(url_rect.left_bottom() + vec2(0.0, 4.0))
-            .show(ctx, |ui| {
-                Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_width(url_rect.width() - 12.0);
-                    for (i, (title, url, bookmark)) in suggestions.iter().enumerate() {
-                        let selected = self.suggestion_index == Some(i);
-                        let resp = ui
-                            .horizontal(|ui| {
-                                ui.set_min_height(26.0);
-                                if *bookmark {
-                                    icon(ui, Icon::StarFilled, 16.0, Color32::from_rgb(232, 160, 32));
-                                } else {
-                                    icon(ui, Icon::History, 16.0, ui.visuals().weak_text_color());
-                                }
-                                if !title.is_empty() {
-                                    ui.label(truncate(title, 60));
-                                    ui.label(RichText::new("—").weak());
-                                }
-                                ui.label(RichText::new(truncate(url, 70)).color(ui.visuals().hyperlink_color).size(12.0));
-                            })
-                            .response;
-                        let resp = ui.interact(resp.rect, Id::new(("sugg", i)), Sense::click());
-                        if selected || resp.hovered() {
-                            ui.painter().rect_filled(resp.rect.expand(2.0), 4.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
-                        }
-                        if resp.clicked() {
-                            chosen = Some(url.clone());
-                        }
-                    }
-                });
-            });
-        self.suggestion_rect = area.response.rect;
-        if let Some(url) = chosen {
-            self.navigate_input(&url);
-        }
     }
 
     fn draw_bookmarks_bar(&mut self, ui: &mut Ui) {
@@ -1118,26 +893,6 @@ impl Browser {
 
     fn draw_content(&mut self, ui: &mut Ui) {
         let rect = self.content_rect;
-        let ppp = self.ppp;
-
-        if let Some(reason) = self.active_tab().crashed.clone() {
-            ui.painter().rect_filled(rect, 0.0, ui.visuals().window_fill);
-            let mut reload = false;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(40.0)), |ui| {
-                ui.add_space(rect.height() * 0.25);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("This tab crashed").size(26.0).strong());
-                    ui.label(RichText::new(truncate(&reason, 200)).weak());
-                    ui.add_space(12.0);
-                    reload = ui.button("Reload tab").clicked();
-                });
-            });
-            if reload {
-                self.reload();
-            }
-            return;
-        }
-
         match self.active_tab().internal {
             Some(crate::browser::InternalPage::Settings) => {
                 self.draw_settings_page(ui, rect);
@@ -1158,37 +913,14 @@ impl Browser {
         if self.draw_reader(ui, rect) {
             return;
         }
-        let Some(webview) = self.active_webview().cloned() else {
+        if self.active_webview().is_none() {
             self.draw_start_page(ui, rect);
             return;
-        };
-
-        // Keep the page sized to exactly the area it is shown in.
-        let size = dpi::PhysicalSize::new((rect.width() * ppp).max(1.0) as u32, (rect.height() * ppp).max(1.0) as u32);
-        if webview.size() != Size2D::new(size.width as f32, size.height as f32) {
-            webview.resize(size);
         }
-        // Render into the offscreen framebuffer, then have egui blit it into place.
-        webview.paint();
-        if let Some(render) = self.page_context.render_to_parent_callback() {
-            let render = Arc::new(render);
-            ui.ctx().layer_painter(egui::LayerId::background()).add(egui::PaintCallback {
-                rect,
-                callback: Arc::new(CallbackFn::new(move |info, painter| {
-                    let clip = info.viewport_in_pixels();
-                    let target = ERect::new(Point2D::new(clip.left_px, clip.from_bottom_px), Size2D::new(clip.width_px, clip.height_px));
-                    render(painter.gl(), target);
-                })),
-            });
-        }
-
-        if let Some(text) = webview.status_text().filter(|s| !s.is_empty()) {
-            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("status")));
-            let galley = painter.layout_no_wrap(truncate(&text, 120), FontId::proportional(12.0), ui.visuals().text_color());
-            let r = egui::Rect::from_min_size(pos2(rect.left(), rect.bottom() - galley.size().y - 8.0), galley.size() + vec2(12.0, 8.0));
-            painter.rect_filled(r, CornerRadius { ne: 6, ..Default::default() }, ui.visuals().extreme_bg_color);
-            painter.galley(r.min + vec2(6.0, 4.0), galley, Color32::PLACEHOLDER);
-        }
+        // The page itself is the engine's native view, placed over `rect`
+        // after this frame (Browser::layout_pages). Paint the area in the
+        // page's usual white so resizing never flashes the theme colour.
+        ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
     }
 
     /// Load (once) the start-page wallpaper chosen in settings.
@@ -1372,488 +1104,6 @@ impl Browser {
     }
 
     // ----- page-requested dialogs and popups ---------------------------------
-
-    fn draw_page_controls(&mut self, ctx: &egui::Context) {
-        let Some(active_id) = self.active_webview().map(|w| w.id()) else { return };
-        let Some(index) = self.controls.iter().position(|c| c.webview == active_id) else { return };
-
-        let rect = self.content_rect;
-        let ppp = self.ppp;
-        let accent = self.accent();
-        let host = host_of(&self.active_tab().url());
-        let mouse = self.mouse_position().unwrap_or(rect.center());
-        let to_screen = |x: i32, y: i32| rect.min + vec2(x as f32 / ppp, y as f32 / ppp);
-        let click_outside = |area: egui::Rect| {
-            ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !area.contains(p)))
-        };
-
-        let mut outcome = ControlOutcome::Keep;
-        let control = &mut self.controls[index].control;
-        match control {
-            PageControl::Dialog { dialog, input } => {
-                let modal = egui::Modal::new(Id::new("page_dialog")).show(ctx, |ui| {
-                    ui.set_width(420.0);
-                    ui.label(RichText::new(format!("{host} says")).strong());
-                    ui.add_space(6.0);
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| ui.label(dialog.message()));
-                    if matches!(dialog, SimpleDialog::Prompt(_)) {
-                        let r = ui.add(egui::TextEdit::singleline(input).desired_width(f32::INFINITY));
-                        r.request_focus();
-                    }
-                    ui.add_space(10.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let enter = ui.input(|i| i.key_pressed(EKey::Enter));
-                        if ui.button("  OK  ").clicked() || enter {
-                            outcome = ControlOutcome::Confirm;
-                        }
-                        if !matches!(dialog, SimpleDialog::Alert(_)) && ui.button("Cancel").clicked() {
-                            outcome = ControlOutcome::Dismiss;
-                        }
-                    });
-                });
-                if modal.should_close() && matches!(outcome, ControlOutcome::Keep) {
-                    outcome = ControlOutcome::Dismiss;
-                }
-                if let (ControlOutcome::Confirm, SimpleDialog::Prompt(p)) = (&outcome, &mut *dialog) {
-                    p.set_current_value(input);
-                }
-            },
-            PageControl::Auth { request, user, pass } => {
-                let modal = egui::Modal::new(Id::new("page_auth")).show(ctx, |ui| {
-                    ui.set_width(380.0);
-                    let who = if request.for_proxy() { "The proxy".to_string() } else { host_of(&Some(request.url().clone())) };
-                    ui.label(RichText::new(format!("{who} is asking you to sign in")).strong());
-                    ui.add_space(6.0);
-                    egui::Grid::new("auth").num_columns(2).show(ui, |ui| {
-                        ui.label("Username");
-                        ui.add(egui::TextEdit::singleline(user).desired_width(240.0));
-                        ui.end_row();
-                        ui.label("Password");
-                        ui.add(egui::TextEdit::singleline(pass).password(true).desired_width(240.0));
-                        ui.end_row();
-                    });
-                    ui.add_space(8.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("Sign in").clicked() || ui.input(|i| i.key_pressed(EKey::Enter)) {
-                            outcome = ControlOutcome::Confirm;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            outcome = ControlOutcome::Dismiss;
-                        }
-                    });
-                });
-                if modal.should_close() && matches!(outcome, ControlOutcome::Keep) {
-                    outcome = ControlOutcome::Dismiss;
-                }
-            },
-            PageControl::Permission(request) => {
-                let what = match request.feature() {
-                    PermissionFeature::Geolocation => "know your location",
-                    PermissionFeature::Notifications | PermissionFeature::Push => "show notifications",
-                    PermissionFeature::Camera => "use your camera",
-                    PermissionFeature::Microphone => "use your microphone",
-                    PermissionFeature::Speaker => "choose audio outputs",
-                    PermissionFeature::Midi => "access MIDI devices",
-                    PermissionFeature::Bluetooth => "use Bluetooth",
-                    PermissionFeature::PersistentStorage => "store data permanently",
-                    PermissionFeature::ScreenWakeLock(_) => "keep your screen awake",
-                    PermissionFeature::Gamepad => "use your gamepad",
-                    _ => "use a device feature",
-                };
-                egui::Area::new(Id::new("permission"))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(rect.left_top() + vec2(12.0, 10.0))
-                    .show(ctx, |ui| {
-                        Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("{host} wants to {what}")).strong());
-                                ui.add_space(12.0);
-                                ui.checkbox(&mut self.remember_permission, "Remember");
-                                if ui.button("Block").clicked() {
-                                    outcome = ControlOutcome::Dismiss;
-                                }
-                                if ui.add(egui::Button::new(RichText::new("Allow").color(Color32::WHITE)).fill(accent)).clicked() {
-                                    outcome = ControlOutcome::Confirm;
-                                }
-                            });
-                        });
-                    });
-            },
-            PageControl::Unload(_) => {
-                let modal = egui::Modal::new(Id::new("page_unload")).show(ctx, |ui| {
-                    ui.set_width(380.0);
-                    ui.label(RichText::new("Leave this page?").strong().size(16.0));
-                    ui.add_space(4.0);
-                    ui.label(format!("{host} says changes you made may not be saved."));
-                    ui.add_space(10.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(egui::Button::new(RichText::new("Leave").color(Color32::WHITE)).fill(accent)).clicked() {
-                            outcome = ControlOutcome::Confirm;
-                        }
-                        if ui.button("Stay").clicked() {
-                            outcome = ControlOutcome::Dismiss;
-                        }
-                    });
-                });
-                if modal.should_close() && matches!(outcome, ControlOutcome::Keep) {
-                    outcome = ControlOutcome::Dismiss;
-                }
-            },
-            PageControl::Select(select) => {
-                let pos = select.position();
-                let anchor = to_screen(pos.min.x, pos.max.y);
-                let min_width = ((pos.max.x - pos.min.x) as f32 / ppp).max(140.0);
-                let multiple = select.allow_select_multiple();
-                let mut chosen = select.selected_options();
-                let area = egui::Area::new(Id::new("select"))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(anchor)
-                    .constrain(true)
-                    .show(ctx, |ui| {
-                        Frame::menu(ui.style()).show(ui, |ui| {
-                            ui.set_min_width(min_width);
-                            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                                let mut option = |ui: &mut Ui, label: &str, id: usize, disabled: bool, indent: bool| {
-                                    let selected = chosen.contains(&id);
-                                    let text = if indent { format!("    {label}") } else { label.to_string() };
-                                    let resp = ui.add_enabled(!disabled, egui::Button::selectable(selected, text));
-                                    if resp.clicked() {
-                                        if multiple {
-                                            if selected { chosen.retain(|c| *c != id) } else { chosen.push(id) }
-                                        } else {
-                                            outcome = ControlOutcome::Select(vec![id]);
-                                        }
-                                    }
-                                };
-                                for item in select.options() {
-                                    match item {
-                                        SelectElementOptionOrOptgroup::Option(o) => option(ui, &o.label, o.id, o.is_disabled, false),
-                                        SelectElementOptionOrOptgroup::Optgroup { label, options } => {
-                                            ui.label(RichText::new(label).strong().weak());
-                                            for o in options {
-                                                option(ui, &o.label, o.id, o.is_disabled, true);
-                                            }
-                                        },
-                                    }
-                                }
-                            });
-                            if multiple {
-                                ui.separator();
-                                if ui.button("Done").clicked() {
-                                    outcome = ControlOutcome::Select(chosen.clone());
-                                }
-                            }
-                        });
-                    });
-                if multiple && matches!(outcome, ControlOutcome::Keep) {
-                    select.select(chosen);
-                }
-                if matches!(outcome, ControlOutcome::Keep) && click_outside(area.response.rect) {
-                    outcome = if multiple { ControlOutcome::Confirm } else { ControlOutcome::Dismiss };
-                }
-            },
-            PageControl::Color { picker, color } => {
-                let pos = picker.position();
-                let area = egui::Area::new(Id::new("color"))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(to_screen(pos.min.x, pos.max.y))
-                    .constrain(true)
-                    .show(ctx, |ui| {
-                        Frame::menu(ui.style()).show(ui, |ui| {
-                            egui::widgets::color_picker::color_picker_color32(ui, color, egui::widgets::color_picker::Alpha::Opaque);
-                            ui.horizontal(|ui| {
-                                if ui.button("Cancel").clicked() {
-                                    outcome = ControlOutcome::Dismiss;
-                                }
-                                if ui.button("Choose").clicked() {
-                                    outcome = ControlOutcome::Confirm;
-                                }
-                            });
-                        });
-                    });
-                if matches!(outcome, ControlOutcome::Keep) && click_outside(area.response.rect) {
-                    outcome = ControlOutcome::Dismiss;
-                }
-            },
-            PageControl::ContextMenu(menu) => {
-                let info = menu.element_info().clone();
-                let items: Vec<ContextMenuItem> = menu.items().to_vec();
-                let area = egui::Area::new(Id::new("context_menu"))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(mouse)
-                    .constrain(true)
-                    .show(ctx, |ui| {
-                        Frame::menu(ui.style()).show(ui, |ui| {
-                            ui.set_min_width(200.0);
-                            let item = |ui: &mut Ui, label: &str, enabled: bool| {
-                                ui.add_enabled(enabled, egui::Button::new(label).frame(false).min_size(vec2(190.0, 24.0))).clicked()
-                            };
-                            for entry in &items {
-                                match entry {
-                                    ContextMenuItem::Separator => {
-                                        ui.separator();
-                                    },
-                                    ContextMenuItem::Item { label, action, enabled } => {
-                                        let label = match action {
-                                            ContextMenuAction::OpenLinkInNewWebView => "Open link in new tab",
-                                            ContextMenuAction::OpenImageInNewView => "Open image in new tab",
-                                            _ => label.as_str(),
-                                        };
-                                        if item(ui, label, *enabled) {
-                                            outcome = match action {
-                                                ContextMenuAction::OpenLinkInNewWebView => info.link_url.clone().map_or(ControlOutcome::Dismiss, ControlOutcome::OpenInNewTab),
-                                                ContextMenuAction::OpenImageInNewView => info.image_url.clone().map_or(ControlOutcome::Dismiss, ControlOutcome::OpenInNewTab),
-                                                ContextMenuAction::CopyLink => info.link_url.clone().map_or(ControlOutcome::Dismiss, |u| ControlOutcome::Copy(u.to_string())),
-                                                ContextMenuAction::CopyImageLink => info.image_url.clone().map_or(ControlOutcome::Dismiss, |u| ControlOutcome::Copy(u.to_string())),
-                                                other => ControlOutcome::Menu(*other),
-                                            };
-                                        }
-                                    },
-                                }
-                            }
-                            // Browser additions.
-                            let has_extras = info.link_url.is_some() || info.image_url.is_some();
-                            if has_extras || !items.is_empty() {
-                                ui.separator();
-                            }
-                            if let Some(link) = &info.link_url {
-                                if item(ui, "Save link as…", true) {
-                                    outcome = ControlOutcome::Download(link.clone());
-                                }
-                            }
-                            if let Some(image) = &info.image_url {
-                                if item(ui, "Save image as…", true) {
-                                    outcome = ControlOutcome::Download(image.clone());
-                                }
-                            }
-                            if item(ui, "Bookmark this page", true) {
-                                outcome = ControlOutcome::Bookmark;
-                            }
-                        });
-                    });
-                if matches!(outcome, ControlOutcome::Keep) && click_outside(area.response.rect) {
-                    outcome = ControlOutcome::Dismiss;
-                }
-            },
-        }
-
-        if matches!(outcome, ControlOutcome::Keep) {
-            return;
-        }
-        let pending = self.controls.remove(index);
-        match (pending.control, outcome) {
-            (PageControl::Dialog { dialog, .. }, ControlOutcome::Confirm) => match dialog {
-                SimpleDialog::Alert(d) => d.confirm(),
-                SimpleDialog::Confirm(d) => d.confirm(),
-                SimpleDialog::Prompt(d) => d.confirm(),
-            },
-            (PageControl::Dialog { dialog, .. }, _) => match dialog {
-                SimpleDialog::Alert(d) => d.confirm(),
-                SimpleDialog::Confirm(d) => d.dismiss(),
-                SimpleDialog::Prompt(d) => d.dismiss(),
-            },
-            (PageControl::Auth { request, user, pass }, ControlOutcome::Confirm) => request.authenticate(user, pass),
-            (PageControl::Permission(request), outcome) => {
-                let allowed = matches!(outcome, ControlOutcome::Confirm);
-                if self.remember_permission {
-                    self.remember_permission_answer(request.feature(), allowed);
-                }
-                if allowed { request.allow() } else { request.deny() }
-            },
-            (PageControl::Unload(request), ControlOutcome::Confirm) => request.allow(),
-            (PageControl::Unload(request), _) => request.deny(),
-            (PageControl::Select(mut select), ControlOutcome::Select(ids)) => {
-                select.select(ids);
-                select.submit();
-            },
-            (PageControl::Select(select), ControlOutcome::Confirm) => select.submit(),
-            (PageControl::Color { mut picker, color }, ControlOutcome::Confirm) => {
-                picker.select(Some(RgbColor { red: color.r(), green: color.g(), blue: color.b() }));
-                picker.submit();
-            },
-            (PageControl::ContextMenu(menu), ControlOutcome::Menu(action)) => menu.select(action),
-            (PageControl::ContextMenu(menu), other) => {
-                menu.dismiss();
-                match other {
-                    ControlOutcome::OpenInNewTab(url) => self.open_background_tab(url),
-                    ControlOutcome::Download(url) => {
-                        let referer = self.active_tab().url();
-                        self.start_download(url, referer);
-                    },
-                    ControlOutcome::Copy(text) => {
-                        ctx.copy_text(text);
-                        self.toast("Copied");
-                    },
-                    ControlOutcome::Bookmark => self.toggle_bookmark(),
-                    _ => {},
-                }
-            },
-            // Anything else (cancel, click outside): dropping the request cancels it.
-            _ => {},
-        }
-        ctx.request_repaint();
-    }
-
-    // ----- menu -------------------------------------------------------------
-
-    fn draw_menu(&mut self, ctx: &egui::Context) {
-        let button: egui::Rect = ctx.memory(|m| m.data.get_temp(Id::new("menu_button"))).unwrap_or(egui::Rect::NOTHING);
-        let zoom = self.active_tab().zoom;
-        let mut close = false;
-        let area = egui::Area::new(Id::new("main_menu"))
-            .order(egui::Order::Foreground)
-            .pivot(Align2::RIGHT_TOP)
-            .fixed_pos(button.right_bottom() + vec2(0.0, 4.0))
-            .show(ctx, |ui| {
-                Frame::menu(ui.style()).show(ui, |ui| {
-                    ui.set_width(250.0);
-                    let row = |ui: &mut Ui, label: &str, shortcut: &str| {
-                        let resp = ui.add(egui::Button::new(label).shortcut_text(shortcut).frame(false).min_size(vec2(240.0, 26.0)));
-                        resp.clicked()
-                    };
-                    if row(ui, "New tab", "Ctrl+T") {
-                        self.new_tab();
-                        close = true;
-                    }
-                    if row(ui, "New private window", "Ctrl+Shift+N") {
-                        self.open_private_window();
-                        close = true;
-                    }
-                    ui.separator();
-                    if row(ui, "Bookmarks", "Ctrl+Shift+O") {
-                        self.toggle_panel(SidePanel::Bookmarks);
-                    }
-                    if row(ui, "History", "Ctrl+H") {
-                        self.toggle_panel(SidePanel::History);
-                    }
-                    if row(ui, "Downloads", "Ctrl+J") {
-                        self.toggle_panel(SidePanel::Downloads);
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("Zoom");
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button(" + ").clicked() {
-                                self.zoom_step(true);
-                            }
-                            if ui.button(format!("{}%", (zoom * 100.0).round())).clicked() {
-                                self.set_zoom(1.0);
-                            }
-                            if ui.button(" − ").clicked() {
-                                self.zoom_step(false);
-                            }
-                        });
-                    });
-                    if row(ui, "Find in page…", "Ctrl+F") {
-                        self.open_find();
-                        close = true;
-                    }
-                    if row(ui, if self.active_tab().reader.is_some() { "Exit reader mode" } else { "Reader mode" }, "F9") {
-                        self.toggle_reader();
-                        close = true;
-                    }
-                    if row(ui, "Take screenshot", "Ctrl+Shift+S") {
-                        self.take_screenshot();
-                        close = true;
-                    }
-                    if row(ui, "Print…", "Ctrl+P") {
-                        self.start_print();
-                        close = true;
-                    }
-                    if row(ui, "Full screen", "F11") {
-                        self.toggle_window_fullscreen();
-                        close = true;
-                    }
-                    ui.menu_button("More tools", |ui| {
-                        ui.set_min_width(220.0);
-                        if ui.add(egui::Button::new("Developer console").shortcut_text("F12").frame(false)).clicked() {
-                            self.toggle_devtools();
-                            close = true;
-                        }
-                        if ui.add(egui::Button::new("View page source").shortcut_text("Ctrl+U").frame(false)).clicked() {
-                            self.view_source();
-                            close = true;
-                        }
-                        let muted = self.active_tab().muted;
-                        if ui.add(egui::Button::new(if muted { "Unmute tab" } else { "Mute tab" }).frame(false)).clicked() {
-                            self.toggle_mute(self.active);
-                            close = true;
-                        }
-                        let pinned = self.active_tab().pinned;
-                        if ui.add(egui::Button::new(if pinned { "Unpin tab" } else { "Pin tab" }).frame(false)).clicked() {
-                            self.toggle_pin(self.active);
-                            close = true;
-                        }
-                        ui.separator();
-                        if ui.add(egui::Button::new("Import bookmarks…").frame(false)).clicked() {
-                            close = true;
-                            self.import_bookmarks();
-                        }
-                        if ui.add(egui::Button::new("Export bookmarks…").frame(false)).clicked() {
-                            close = true;
-                            self.export_bookmarks();
-                        }
-                        if ui.add(egui::Button::new("Clear cookies and site data").frame(false)).clicked() {
-                            close = true;
-                            self.clear_site_data();
-                        }
-                    });
-                    ui.separator();
-                    if let Some(crate::updates::UpdateStatus::Available { version, url }) = self.update_status() {
-                        let label = RichText::new(format!("Update available: Ferrum {version}")).color(self.accent()).strong();
-                        if ui.add(egui::Button::new(label).frame(false).min_size(vec2(240.0, 26.0))).clicked() {
-                            if let Ok(url) = Url::parse(&url) {
-                                self.open_tab(Some(url));
-                            }
-                            close = true;
-                        }
-                    }
-                    if row(ui, "Settings", "Ctrl+,") {
-                        self.open_settings();
-                        close = true;
-                    }
-                    if row(ui, "Keyboard shortcuts", "Ctrl+/") {
-                        self.open_internal(crate::browser::InternalPage::Shortcuts);
-                        close = true;
-                    }
-                    if row(ui, "Quit", "") {
-                        self.window.request_redraw();
-                        ctx.memory_mut(|m| m.data.insert_temp(Id::new("quit"), true));
-                        close = true;
-                    }
-                });
-            });
-        let clicked_outside = ctx.input(|i| {
-            i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !button.contains(p))
-        });
-        if close || clicked_outside {
-            self.menu_open = false;
-        }
-    }
-
-    fn draw_toast(&mut self, ctx: &egui::Context) {
-        let Some((text, since)) = &self.toast else { return };
-        let elapsed = since.elapsed().as_secs_f32();
-        if elapsed > 2.2 {
-            self.toast = None;
-            return;
-        }
-        let alpha = (2.2 - elapsed).clamp(0.0, 0.4) / 0.4;
-        let rect = self.content_rect;
-        egui::Area::new(Id::new("toast"))
-            .order(egui::Order::Tooltip)
-            .pivot(Align2::CENTER_BOTTOM)
-            .fixed_pos(pos2(rect.center().x, rect.bottom() - 24.0))
-            .interactable(false)
-            .show(ctx, |ui| {
-                Frame::new()
-                    .fill(Color32::from_black_alpha((220.0 * alpha) as u8))
-                    .corner_radius(8.0)
-                    .inner_margin(Margin::symmetric(14, 8))
-                    .show(ui, |ui| ui.label(RichText::new(text.as_str()).color(Color32::WHITE.gamma_multiply(alpha))));
-            });
-        ctx.request_repaint_after(Duration::from_millis(50));
-    }
 
     // ----- side panels ------------------------------------------------------
 
@@ -2103,16 +1353,4 @@ impl Browser {
         }
     }
 
-    pub(crate) fn mouse_position(&self) -> Option<egui::Pos2> {
-        self.mouse_physical().map(|(x, y)| pos2(x / self.ppp, y / self.ppp))
-    }
-
-    pub(crate) fn request_quit(&mut self) {
-        self.quit_requested = true;
-        self.window.request_redraw();
-    }
-
-    pub(crate) fn wants_quit(&self) -> bool {
-        self.quit_requested || self.egui_ctx().is_some_and(|ctx| ctx.memory(|m| m.data.get_temp::<bool>(Id::new("quit")).unwrap_or(false)))
-    }
 }

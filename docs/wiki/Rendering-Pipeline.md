@@ -1,5 +1,8 @@
 # Rendering pipeline
 
+> **Note (0.7.0):** Ferrum now uses the system web engine through wry instead of Servo. Parts of this page describe the old Servo design; see [Architecture](Architecture) and the [Module reference](Module-Reference) for the current one.
+
+
 Ferrum shows two things in one window: Servo's rendering of the page, and egui's interface. Both use OpenGL, and they share one GL context.
 
 ## Contexts

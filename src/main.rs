@@ -3,27 +3,29 @@
 
 //! Ferrum — a native web browser written in Rust.
 //!
-//! * Page engine: Servo (Rust; the project Firefox's Stylo CSS engine and
-//!   WebRender came from).
-//! * Browser interface (tabs, toolbar, address bar, menus, panels, dialogs):
-//!   drawn natively with egui on the same OpenGL surface. There is no
-//!   HTML/CSS/JS in the app itself.
+//! * Pages: the system's web engine through wry — WebKit on macOS, WebView2
+//!   (Chromium) on Windows, WebKitGTK on Linux.
+//! * Browser interface (tabs, toolbar, address bar, menus, panels): drawn
+//!   natively in Rust with egui. There is no HTML/CSS/JS in the app itself.
 
 // No console window on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod adblock;
 mod blocker;
 mod bookmarks_io;
-mod compat;
 mod browser;
 mod devtools;
 mod downloads;
 mod features_ui;
 mod find;
+mod gl;
 mod icons;
-mod keys;
 mod location;
-mod print;
+mod notify;
+mod overlay;
+mod overlay_ui;
+mod pagescript;
 mod profile;
 mod reader;
 mod settings_page;
@@ -59,22 +61,9 @@ pub fn timing(label: &str) {
     }
 }
 
-/// Sent from other threads (Servo, downloads) when the main thread has work.
+/// Sent from other threads (downloads, the engine's callbacks) when the main thread has work.
 #[derive(Debug, Clone, Copy)]
 pub struct WakeUp;
-
-#[derive(Clone)]
-struct Waker(EventLoopProxy<WakeUp>);
-
-impl servo::EventLoopWaker for Waker {
-    fn clone_box(&self) -> Box<dyn servo::EventLoopWaker> {
-        Box::new(self.clone())
-    }
-
-    fn wake(&self) {
-        let _ = self.0.send_event(WakeUp);
-    }
-}
 
 struct Args {
     url: Option<String>,
@@ -111,8 +100,7 @@ impl ApplicationHandler<WakeUp> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let App::Starting { proxy, args } = self {
             let args = args.take().unwrap_or(Args { url: None, private: false });
-            let waker = Box::new(Waker(proxy.clone()));
-            let browser = Browser::new(event_loop, proxy.clone(), waker, args.url, args.private);
+            let browser = Browser::new(event_loop, proxy.clone(), args.url, args.private);
             *self = App::Running(Box::new(browser));
         }
     }
@@ -120,22 +108,29 @@ impl ApplicationHandler<WakeUp> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: WakeUp) {
         if let App::Running(browser) = self {
             browser.pump();
+            browser.window.request_redraw();
         }
     }
 
     /// Sleep until there is input, a wake-up from another thread, or the next
     /// scheduled interface repaint — never spin.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Linux: WebKitGTK runs on GTK's main loop; give it its turn.
+        #[cfg(target_os = "linux")]
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
+        }
         let App::Running(browser) = self else { return };
+        browser.pump();
         match browser.next_wake() {
             Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let App::Running(browser) = self else { return };
-        if !browser.handle_window_event(event) {
+        if !browser.handle_window_event(event_loop, id, event) {
             *self = App::Done;
             event_loop.exit();
         }
@@ -174,8 +169,7 @@ fn install_crash_reporter() {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = std::fs::write(&path, &report);
-        // Servo's background threads may panic during normal shutdown; only
-        // interrupt the user for main-thread crashes.
+        // Only interrupt the user for main-thread crashes.
         if thread_name == "main" {
             let _ = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Error)
@@ -190,10 +184,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     timing("process start");
     install_crash_reporter();
     let args = parse_args();
-    rustls::crypto::aws_lc_rs::default_provider()
+    rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install TLS crypto provider");
 
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
+    // Linux: wry embeds WebKitGTK views as X11 child windows, so use X11
+    // (XWayland on Wayland desktops), and start GTK first.
+    #[cfg(target_os = "linux")]
+    let event_loop = {
+        // SAFETY: set before any other thread starts.
+        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+        gtk::init().map_err(|e| format!("Could not start GTK: {e}"))?;
+        // WebKitGTK's GL use trips harmless GLXBadWindow errors (170) that
+        // winit would otherwise treat as fatal.
+        winit::platform::x11::register_xlib_error_hook(Box::new(|_display, error| {
+            let error = error as *mut x11_dl::xlib::XErrorEvent;
+            unsafe { (*error).error_code == 170 }
+        }));
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        EventLoop::<WakeUp>::with_user_event().with_x11().build()?
+    };
+    #[cfg(not(target_os = "linux"))]
     let event_loop = EventLoop::<WakeUp>::with_user_event().build()?;
     let mut app = App::Starting { proxy: event_loop.create_proxy(), args: Some(args) };
     event_loop.run_app(&mut app)?;

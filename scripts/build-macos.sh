@@ -4,7 +4,7 @@
 # universal Ferrum.app, and packages it as a .dmg.
 #
 # Needs: Xcode command line tools (xcode-select --install), Rust via rustup,
-#        Homebrew packages: brew install llvm cmake python pkg-config
+#        (Pages use the system's WebKit, so nothing else is needed.)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -15,18 +15,6 @@ DIST=dist
 APP="$DIST/Ferrum.app"
 ARCHS=(aarch64-apple-darwin x86_64-apple-darwin)
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-11.0}
-
-# bindgen (used by Servo's WebGL shader translator) must use the libclang that
-# matches the SDK's compiler headers, or the Intel (x86_64) build fails with
-# "use of undeclared identifier '__builtin_ia32_…'". Xcode's own libclang does.
-if [[ -z "${LIBCLANG_PATH:-}" ]]; then
-  XCODE_LIBCLANG="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
-  if [[ -f "$XCODE_LIBCLANG/libclang.dylib" ]]; then
-    export LIBCLANG_PATH="$XCODE_LIBCLANG"
-  elif command -v brew >/dev/null; then
-    export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
-  fi
-fi
 
 echo "==> Building Ferrum $VERSION for macOS (${ARCHS[*]})"
 for target in "${ARCHS[@]}"; do

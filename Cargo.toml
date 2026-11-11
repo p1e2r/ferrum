@@ -1,37 +1,55 @@
 [package]
 name = "ferrum"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
-description = "A fast, native web browser written in Rust: Servo engine with a natively drawn interface."
+description = "A fast web browser with a native Rust interface, using the system web engine (WebKit, WebView2, WebKitGTK)."
 repository = "https://github.com/p1e2r/ferrum"
 readme = "README.md"
-keywords = ["browser", "servo", "web", "egui"]
+keywords = ["browser", "webview", "web", "egui"]
 categories = ["gui", "web-programming"]
 
 [dependencies]
-# WebGL (three.js and other 3D), crypto.subtle (many sign-ins) and Brotli
-# streams aren't in Servo's default feature set, so they're enabled here.
-servo = { version = "0.8.0", features = ["webgl", "subtlecrypto", "brotli-compression-stream"] }
+# Pages are drawn by the system's web engine through wry: WebKit (WKWebView)
+# on macOS, WebView2 (Chromium) on Windows, WebKitGTK on Linux.
+wry = { version = "0.57", features = ["devtools"] }
 winit = "0.30.13"
 egui = "0.34.3"
-egui-winit = { version = "0.34.3", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }
+egui-winit = { version = "0.34.3", default-features = false, features = ["clipboard", "links", "x11"] }
 egui_glow = { version = "0.34.3", features = ["winit"] }
 glow = "0.17.0"
-euclid = "0.22"
+glutin = "0.32"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
 dpi = "0.1"
 url = "2.5"
-keyboard-types = "0.8.3"
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws-lc-rs"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "ring"] }
 log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
 rfd = "0.15"
 iana-time-zone = "0.1"
 chrono = "0.4"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
+notify-rust = "4"
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
+x11-dl = "2.21"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+block2 = "0.6"
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSError"] }
+objc2-web-kit = { version = "0.3.2", features = ["block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com"] }
 
 [profile.release]
 opt-level = 3
@@ -40,13 +58,7 @@ codegen-units = 16
 strip = "debuginfo"
 
 [profile.dev]
-# Servo is very slow unoptimised; optimise dependencies even in debug builds.
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
-
-# Fixes for engine bugs not yet released upstream. See patches/README.md.
-[patch.crates-io]
-servo-script = { path = "patches/servo-script" }
-servo-paint = { path = "patches/servo-paint" }

@@ -3,22 +3,22 @@
 
 //! Ad and tracker blocking.
 //!
-//! Servo asks the embedder about every resource a page loads
-//! (`WebViewDelegate::load_web_resource`). Requests from one site to a known
-//! ad or tracking server on *another* site are cancelled. Main documents are
-//! never blocked, so typing a listed address still opens it.
+//! The system web engines don't let an app intercept a page's requests, so
+//! blocking happens inside the page: Ferrum's page script (pagescript.rs)
+//! stops scripts, frames, images and requests to a known ad or tracking server
+//! on *another* site. Main documents are never blocked, so typing a listed
+//! address still opens it. This module keeps the list.
 //!
 //! The list is a built-in set of well-known domains, extended with Peter
 //! Lowe's ad and tracking server list, downloaded in the background at most
 //! once a week and cached in the profile.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
-use servo::WebViewId;
 
 const LIST_URL: &str = "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext";
 const LIST_FILE: &str = "blocklist.txt";
@@ -88,8 +88,6 @@ pub struct Blocker {
     pub enabled: Cell<bool>,
     /// Sites where blocking is switched off.
     pub exceptions: RefCell<HashSet<String>>,
-    /// Blocked addresses per tab, for the page (URL) it is showing.
-    blocked: RefCell<HashMap<WebViewId, (String, HashSet<String>)>>,
 }
 
 impl Blocker {
@@ -99,42 +97,33 @@ impl Blocker {
             domains: Arc::new(RwLock::new(domains)),
             enabled: Cell::new(enabled),
             exceptions: RefCell::new(exceptions.iter().cloned().collect()),
-            blocked: RefCell::new(HashMap::new()),
         }
     }
 
-    /// Load the cached full list on a background thread, and download a fresh
-    /// one if it's missing or more than a week old.
-    pub fn load_list_in_background(&self, profile_dir: Option<PathBuf>) {
-        let domains = self.domains.clone();
-        let spawn = std::thread::Builder::new().name("blocklist".into()).spawn(move || {
-            let path = profile_dir.map(|d| d.join(LIST_FILE));
-            let cached = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
-            let fresh = path
-                .as_ref()
-                .and_then(|p| std::fs::metadata(p).ok())
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| SystemTime::now().duration_since(t).ok())
-                .is_some_and(|age| age < LIST_MAX_AGE);
-            if let Some(text) = &cached {
-                add_list(&domains, text);
-            }
-            if fresh {
-                return;
-            }
-            match download_list() {
-                Ok(text) => {
-                    let count = add_list(&domains, &text);
-                    log::info!("Blocklist updated: {count} domains");
-                    if let Some(path) = &path {
-                        let tmp = path.with_extension("tmp");
-                        if std::fs::write(&tmp, &text).is_ok() {
-                            let _ = std::fs::rename(&tmp, path);
-                        }
-                    }
-                },
-                Err(e) => log::info!("Could not download the blocklist: {e}"),
-            }
+    /// Load the cached full list now (a small file), and download a fresh one
+    /// in the background if it's missing or more than a week old; the new list
+    /// is used from the next start.
+    pub fn load_list(&self, profile_dir: Option<PathBuf>) {
+        let path = profile_dir.map(|d| d.join(LIST_FILE));
+        if let Some(text) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+            add_list(&self.domains, &text);
+        }
+        let fresh = path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| SystemTime::now().duration_since(t).ok())
+            .is_some_and(|age| age < LIST_MAX_AGE);
+        let Some(path) = path.filter(|_| !fresh) else { return };
+        let spawn = std::thread::Builder::new().name("blocklist".into()).spawn(move || match download_list() {
+            Ok(text) => {
+                let tmp = path.with_extension("tmp");
+                if std::fs::write(&tmp, &text).is_ok() {
+                    let _ = std::fs::rename(&tmp, &path);
+                }
+                log::info!("Blocklist downloaded; it is used from the next start");
+            },
+            Err(e) => log::info!("Could not download the blocklist: {e}"),
         });
         if let Err(e) = spawn {
             log::warn!("Could not start the blocklist thread: {e}");
@@ -146,6 +135,7 @@ impl Blocker {
     }
 
     /// Whether a request for `host`, made by a page on `page_host`, should be blocked.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn should_block(&self, host: &str, page_host: &str) -> bool {
         if !self.enabled.get() || host.is_empty() {
             return false;
@@ -173,23 +163,11 @@ impl Blocker {
 
     /// Count a blocked request made by the page at `page_url`. A different
     /// page in the same tab starts a new count.
-    pub fn count_blocked(&self, webview: WebViewId, page_url: &str, request_url: &str) {
-        let mut map = self.blocked.borrow_mut();
-        let entry = map.entry(webview).or_insert_with(|| (page_url.to_string(), HashSet::new()));
-        if entry.0 != page_url {
-            *entry = (page_url.to_string(), HashSet::new());
-        }
-        entry.1.insert(request_url.to_string());
-    }
-
-    /// How many different addresses were blocked on the page at `page_url` in this tab.
-    pub fn blocked_on(&self, webview: WebViewId, page_url: &str) -> u32 {
-        self.blocked.borrow().get(&webview).filter(|(u, _)| u == page_url).map_or(0, |(_, set)| set.len() as u32)
-    }
-
-    /// A new page load in this tab starts the count again.
-    pub fn reset_count(&self, webview: WebViewId) {
-        self.blocked.borrow_mut().remove(&webview);
+    /// Every listed domain, sorted, for the page script.
+    pub fn domains(&self) -> Vec<String> {
+        let mut list: Vec<String> = self.domains.read().map(|d| d.iter().cloned().collect()).unwrap_or_default();
+        list.sort();
+        list
     }
 }
 

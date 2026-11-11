@@ -2,17 +2,17 @@
 # SPDX-License-Identifier: MIT
 # macOS -> Windows: cross-compiles an x86_64 Windows build with cargo-xwin,
 # which downloads the Microsoft C runtime and Windows SDK headers and links
-# with LLVM's MSVC-compatible tools. SpiderMonkey comes prebuilt for Windows.
+# with LLVM's MSVC-compatible tools. Pages use Windows' own WebView2 engine,
+# which ships with Windows 10 and 11.
 #
-# Needs: brew install llvm cmake ninja nasm
+# Needs: brew install llvm
 #        cargo install cargo-xwin
 #
 # By running this you accept the Microsoft Visual Studio licence terms for the
 # SDK files that cargo-xwin downloads.
 #
-# Cross-compiling a whole browser engine is the least-trodden path here. If it
-# fails on your machine, the GitHub Actions workflow (.github/workflows/build.yml)
-# builds Windows natively on every push.
+# If it fails on your machine, the GitHub Actions workflow
+# (.github/workflows/build.yml) builds Windows natively on every push.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -28,12 +28,11 @@ if command -v brew >/dev/null; then
   export PATH="$LLVM/bin:$PATH"
   export LIBCLANG_PATH="${LIBCLANG_PATH:-$LLVM/lib}"
 fi
-for tool in clang-cl lld-link llvm-lib cmake nasm; do
-  command -v "$tool" >/dev/null || { echo "Missing $tool — run: brew install llvm cmake ninja nasm"; exit 1; }
+for tool in clang-cl lld-link llvm-lib; do
+  command -v "$tool" >/dev/null || { echo "Missing $tool — run: brew install llvm"; exit 1; }
 done
 
 export XWIN_ACCEPT_LICENSE=1
-export CMAKE_GENERATOR=Ninja
 
 echo "==> Cross-compiling Ferrum $VERSION for Windows ($TARGET)"
 cargo xwin build --release --target "$TARGET"

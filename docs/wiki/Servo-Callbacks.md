@@ -1,5 +1,8 @@
 # Servo callbacks and page controls
 
+> **Note (0.7.0):** Ferrum now uses the system web engine through wry instead of Servo. Parts of this page describe the old Servo design; see [Architecture](Architecture) and the [Module reference](Module-Reference) for the current one.
+
+
 ## The delegate
 
 Servo reports what happens in pages through the `WebViewDelegate` trait. Ferrum implements it once, in `Delegate` (browser.rs), and shares it between all webviews (popups get their parent's delegate).

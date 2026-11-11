@@ -83,7 +83,6 @@ enum Setting {
     Theme,
     Mode,
     Accent,
-    DarkWebsites,
     UiScale,
     Density,
     Roundness,
@@ -109,11 +108,9 @@ enum Setting {
     AskWhereToSave,
     HttpsOnly,
     Notifications,
-    Location,
     ClearHistory,
     ClearSiteData,
     DefaultZoom,
-    FontSize,
     UserAgent,
     DataFolder,
     ResetAll,
@@ -149,7 +146,6 @@ const ITEMS: &[Item] = &[
     item(S::Appearance, T::Theme, "Theme", "Colours for the whole interface. Choosing a theme also sets its accent colour.", "colour color palette dark light skin look", true),
     item(S::Appearance, T::Mode, "Light or dark", "For the Ferrum theme. Other themes are always light or always dark.", "dark mode light mode system appearance night", false),
     item(S::Appearance, T::Accent, "Accent colour", "Used for highlights, selected items and the loading bar.", "color highlight tint", true),
-    item(S::Appearance, T::DarkWebsites, "Dark websites", "Ask websites to use their dark style when the interface is dark. Sites without one may become hard to read.", "prefers-color-scheme night pages", false),
     item(S::Appearance, T::UiScale, "Interface size", "Size of tabs, toolbar and menus. Doesn't affect pages; use page zoom for that.", "scale zoom ui bigger smaller text size", false),
     item(S::Appearance, T::Density, "Density", "Compact fits more on screen.", "compact comfortable spacing padding", false),
     item(S::Appearance, T::Roundness, "Corner rounding", "How rounded buttons, tabs and fields are.", "radius corners square", false),
@@ -180,11 +176,9 @@ const ITEMS: &[Item] = &[
     item(S::Privacy, T::SitePermissions, "Remembered permissions", "Answers you asked Ferrum to remember for camera, location, notifications and so on.", "site settings camera microphone location notifications allow block", true),
     item(S::Privacy, T::HttpsOnly, "HTTPS-only mode", "Only connect to sites over a secure connection. Sites without HTTPS won't load.", "secure ssl tls encryption http", false),
     item(S::Privacy, T::Notifications, "Notifications", "Let sites ask to show notifications. Off by default.", "permission alerts", false),
-    item(S::Privacy, T::Location, "Location", "Let sites ask for your location. Off by default.", "permission geolocation gps", false),
     item(S::Privacy, T::ClearHistory, "Clear history", "Remove every page from your history and start-page tiles.", "delete erase browsing data", false),
     item(S::Privacy, T::ClearSiteData, "Clear cookies and site data", "Signs you out of websites.", "delete erase storage cache localstorage", false),
     item(S::WebContent, T::DefaultZoom, "Default page zoom", "Change one tab's zoom with Ctrl +/−.", "zoom size scale", false),
-    item(S::WebContent, T::FontSize, "Font size", "For pages that don't set their own.", "text size letters fonts", false),
     item(S::Advanced, T::UserAgent, "User agent", "What Ferrum tells websites it is. Leave empty for the default.", "ua user-agent browser string spoof", true),
     item(S::Advanced, T::DataFolder, "Profile folder", "Settings, bookmarks, history, cookies and the crash log.", "data files location", false),
     item(S::Advanced, T::BookmarkFile, "Import or export bookmarks", "Bookmark files (HTML) from Firefox, Chrome, Edge and Safari can be imported, and exported files open in any of them.", "import export html backup migrate move", false),
@@ -428,9 +422,6 @@ impl Browser {
                     }
                 });
             },
-            Setting::DarkWebsites => {
-                toggle(ui, &mut s.dark_websites, accent);
-            },
             Setting::UiScale => {
                 ui.add(egui::Slider::new(&mut s.ui_scale, 0.8..=1.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
             },
@@ -557,9 +548,6 @@ impl Browser {
             Setting::Notifications => {
                 toggle(ui, &mut s.allow_notifications, accent);
             },
-            Setting::Location => {
-                toggle(ui, &mut s.allow_location, accent);
-            },
             Setting::ClearHistory => {
                 let private = self.profile.is_private();
                 if ui.add_enabled(!private && !self.profile.history.is_empty(), egui::Button::new("Clear")).clicked() {
@@ -574,9 +562,6 @@ impl Browser {
             },
             Setting::DefaultZoom => {
                 ui.add(egui::Slider::new(&mut s.default_zoom, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
-            },
-            Setting::FontSize => {
-                ui.add(egui::Slider::new(&mut s.font_size, 9..=32).suffix(" px"));
             },
             Setting::UserAgent => {
                 ui.add(egui::TextEdit::singleline(&mut s.user_agent).hint_text("Default").desired_width(f32::INFINITY));

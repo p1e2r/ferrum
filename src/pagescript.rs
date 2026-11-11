@@ -1,0 +1,200 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ferrum contributors
+
+//! The script Ferrum adds to every page before the page's own scripts run.
+//!
+//! The web engine draws the page in its own native view, which takes the
+//! keyboard and mouse while the page is focused. The script passes Ferrum's
+//! shortcuts (Ctrl+T, Ctrl+L, F12…) and the mouse back/forward buttons to the
+//! browser, reports the page's icon and whether audio or video is playing,
+//! and blocks requests to known ad and tracking servers on other sites.
+//! Messages go to Ferrum with `window.ipc.postMessage` (see browser.rs).
+
+/// Keys Ferrum handles even while a page has focus, with Ctrl (⌘ on macOS).
+const MOD_KEYS: &str = "tTwWnNlLrRfFgGdDbBhHjJoOpPuU,=+-0123456789/[]mMiIsS";
+
+pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String], notifications: &[(String, bool)], allow_notifications: bool) -> String {
+    let notifications = serde_json::to_string(notifications).unwrap_or_else(|_| "[]".into());
+    let list = serde_json::to_string(blocklist).unwrap_or_else(|_| "[]".into());
+    let exceptions = serde_json::to_string(exceptions).unwrap_or_else(|_| "[]".into());
+    let mac = cfg!(target_os = "macos");
+    format!(
+        r#"(function () {{
+  if (window.__ferrum) return;
+  window.__ferrum = true;
+  const post = (m) => {{ try {{ window.ipc.postMessage(JSON.stringify(m)); }} catch (e) {{}} }};
+  const top = window === window.top;
+
+  // ----- browser shortcuts -----
+  const MAC = {mac};
+  const MODS = new Set({mod_keys:?}.split(""));
+  window.addEventListener("keydown", (e) => {{
+    const cmd = MAC ? e.metaKey : e.ctrlKey;
+    const fkey = /^F([1-9]|1[0-2])$/.test(e.key) && !["F1", "F2", "F4", "F7", "F8", "F10"].includes(e.key);
+    const nav = e.altKey && !cmd && (e.key === "ArrowLeft" || e.key === "ArrowRight");
+    const tab = e.ctrlKey && e.key === "Tab";
+    if ((cmd && MODS.has(e.key)) || fkey || nav || tab) {{
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      post({{ t: "key", key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, alt: e.altKey }});
+    }}
+  }}, true);
+  // Mouse back / forward buttons.
+  window.addEventListener("mouseup", (e) => {{
+    if (e.button === 3) {{ e.preventDefault(); history.back(); }}
+    if (e.button === 4) {{ e.preventDefault(); history.forward(); }}
+  }}, true);
+
+  if (!top) return;
+
+  // A click on the page closes Ferrum's menus and popups.
+  window.addEventListener("mousedown", () => post({{ t: "click" }}), true);
+
+  // ----- web notifications -----
+  // The system engines don't all support the Notification API, so Ferrum
+  // provides it: Ferrum asks the user, then shows the notification itself.
+  {{
+    const remembered = new Map({notifications});
+    let state = remembered.has(location.hostname) ? (remembered.get(location.hostname) ? "granted" : "denied") : ({allow_notifications} ? "default" : "denied");
+    const waiting = [];
+    window.__ferrumPermission = (answer) => {{ state = answer; while (waiting.length) waiting.shift()(answer); }};
+    class FerrumNotification extends EventTarget {{
+      constructor(title, options = {{}}) {{
+        super();
+        this.title = String(title);
+        this.body = options.body ? String(options.body) : "";
+        this.tag = options.tag || "";
+        this.icon = options.icon || "";
+        this.onclick = this.onshow = this.onclose = this.onerror = null;
+        setTimeout(() => {{
+          if (state !== "granted") {{ this.dispatchEvent(new Event("error")); if (this.onerror) this.onerror(new Event("error")); return; }}
+          post({{ t: "notify", title: this.title, body: this.body }});
+          this.dispatchEvent(new Event("show"));
+          if (this.onshow) this.onshow(new Event("show"));
+        }}, 0);
+      }}
+      close() {{}}
+      static get permission() {{ return state; }}
+      static requestPermission(callback) {{
+        return new Promise((resolve) => {{
+          const done = (answer) => {{ if (callback) callback(answer); resolve(answer); }};
+          if (state !== "default") return done(state);
+          waiting.push(done);
+          post({{ t: "permission" }});
+        }});
+      }}
+    }}
+    FerrumNotification.maxActions = 0;
+    try {{ Object.defineProperty(window, "Notification", {{ value: FerrumNotification, configurable: true, writable: true }}); }} catch (e) {{}}
+  }}
+
+  // ----- page icon -----
+  const icon = () => {{
+    const link = document.querySelector("link[rel~='icon'][href], link[rel='shortcut icon'][href], link[rel='apple-touch-icon'][href]");
+    const href = link ? link.href : location.origin + "/favicon.ico";
+    if (href.startsWith("http")) post({{ t: "icon", href }});
+  }};
+  window.addEventListener("load", icon);
+
+  // ----- playing audio / video -----
+  let playing = false;
+  const media = () => {{
+    const now = [...document.querySelectorAll("video, audio")].some((m) => !m.paused && !m.ended && !m.muted && m.volume > 0);
+    if (now !== playing) {{ playing = now; post({{ t: "media", playing }}); }}
+  }};
+  for (const ev of ["play", "playing", "pause", "ended", "volumechange", "emptied"]) document.addEventListener(ev, media, true);
+
+  // ----- ad and tracker blocking -----
+  if (!{block_trackers}) return;
+  const base = (h) => {{
+    const p = h.replace(/\.$/, "").split(".");
+    if (p.length <= 2 || /^\d+$/.test(p[p.length - 1])) return h;
+    const two = p[p.length - 1].length === 2 && ["co", "com", "org", "net", "gov", "ac", "edu", "ne", "or"].includes(p[p.length - 2]);
+    return p.slice(two ? -3 : -2).join(".");
+  }};
+  const page = location.hostname;
+  if ({exceptions}.includes(page)) return;
+  const LIST = new Set({list});
+  const blocked = new Set();
+  const listed = (url) => {{
+    let u;
+    try {{ u = new URL(url, location.href); }} catch (e) {{ return false; }}
+    if (!u.protocol.startsWith("http")) return false;
+    const host = u.hostname.toLowerCase();
+    if (base(host) === base(page)) return false;
+    let h = host;
+    for (;;) {{
+      if (LIST.has(h)) {{
+        if (!blocked.has(u.href)) {{ blocked.add(u.href); post({{ t: "blocked", count: blocked.size }}); }}
+        return true;
+      }}
+      const i = h.indexOf(".");
+      if (i < 0 || h.indexOf(".", i + 1) < 0) return false;
+      h = h.slice(i + 1);
+    }}
+  }};
+  // Scripts, frames and images added to the page.
+  const guard = (el) => {{
+    if (!el || !el.tagName) return;
+    const src = el.getAttribute && (el.getAttribute("src") || (el.tagName === "LINK" && el.getAttribute("href")));
+    if (src && listed(src)) {{
+      if (el.tagName === "SCRIPT") el.type = "javascript/blocked";
+      el.removeAttribute("src");
+      if (el.tagName === "IFRAME" || el.tagName === "IMG") el.style.display = "none";
+      if (el.tagName === "LINK") el.removeAttribute("href");
+    }}
+  }};
+  new MutationObserver((records) => {{
+    for (const r of records) for (const n of r.addedNodes) {{
+      if (n.nodeType !== 1) continue;
+      guard(n);
+      if (n.querySelectorAll) n.querySelectorAll("script[src], iframe[src], img[src]").forEach(guard);
+    }}
+  }}).observe(document.documentElement, {{ childList: true, subtree: true }});
+  const wrapSrc = (proto, attr) => {{
+    const d = Object.getOwnPropertyDescriptor(proto, attr);
+    if (!d || !d.set) return;
+    Object.defineProperty(proto, attr, {{ ...d, set(v) {{ if (listed(String(v))) return; d.set.call(this, v); }} }});
+  }};
+  wrapSrc(HTMLScriptElement.prototype, "src");
+  wrapSrc(HTMLImageElement.prototype, "src");
+  wrapSrc(HTMLIFrameElement.prototype, "src");
+  const setAttr = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name, value) {{
+    if ((name === "src" || name === "href") && /^(SCRIPT|IMG|IFRAME)$/.test(this.tagName) && listed(String(value))) return;
+    return setAttr.call(this, name, value);
+  }};
+  // Requests made from scripts.
+  const realFetch = window.fetch;
+  window.fetch = function (input, init) {{
+    const url = typeof input === "string" ? input : input && input.url;
+    if (url && listed(url)) return Promise.reject(new TypeError("Blocked by Ferrum"));
+    return realFetch.call(this, input, init);
+  }};
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {{
+    if (listed(String(url))) {{ this.__ferrumBlocked = true; }}
+    return open.apply(this, arguments);
+  }};
+  const send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function () {{
+    if (this.__ferrumBlocked) {{ try {{ this.abort(); }} catch (e) {{}} return; }}
+    return send.apply(this, arguments);
+  }};
+  if (navigator.sendBeacon) {{
+    const beacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = (url, data) => (listed(url) ? true : beacon(url, data));
+  }}
+}})();"#,
+        mod_keys = MOD_KEYS,
+    )
+}
+
+/// Mutes or unmutes every `<audio>`/`<video>`, including ones that start later.
+pub fn mute(muted: bool) -> String {
+    format!(
+        "(function(m){{window.__ferrumMuted=m;document.querySelectorAll('video,audio').forEach(function(e){{e.muted=m}});\
+         if(!window.__ferrumMuteHook){{window.__ferrumMuteHook=true;document.addEventListener('play',function(e){{\
+         if(window.__ferrumMuted&&'muted' in e.target)e.target.muted=true}},true)}}}})({muted})"
+    )
+}
