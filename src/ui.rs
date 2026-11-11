@@ -351,7 +351,8 @@ impl Browser {
                                 if tab.pinned {
                                     icon(ui, Icon::Pin, 12.0, ui.visuals().weak_text_color());
                                 }
-                                let room = CLOSE_SIZE + 2.0 + if tab.playing || tab.muted { 20.0 } else { 0.0 };
+                                let gap = ui.spacing().item_spacing.x;
+                                let room = CLOSE_SIZE + gap + if tab.playing || tab.muted { 18.0 + gap } else { 0.0 };
                                 let bg = if selected { ui.visuals().extreme_bg_color } else { ui.visuals().panel_fill };
                                 faded_title(ui, &tab.title(), selected, ui.available_width() - room, bg);
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -582,7 +583,8 @@ impl Browser {
                     let pinned_count = self.tabs.iter().filter(|t| t.pinned).count();
                     const PINNED_WIDTH: f32 = 42.0;
                     let unpinned = (self.tabs.len() - pinned_count).max(1) as f32;
-                    let width = ((available - pinned_count as f32 * (PINNED_WIDTH + 2.0)) / unpinned).clamp(60.0, 220.0);
+                    // Each tab is followed by 2 px of spacing.
+                    let width = ((available - pinned_count as f32 * (PINNED_WIDTH + 2.0) - unpinned * 2.0) / unpinned).floor().clamp(60.0, 220.0);
                     egui::ScrollArea::horizontal()
                         .max_width(available)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -621,7 +623,8 @@ impl Browser {
                                                 speaker_rect = Some(icon_button(ui, i, 18.0, true, tip).rect);
                                             }
                                             let show_close = width > 90.0 || selected;
-                                            let room = if show_close { CLOSE_SIZE + 2.0 } else { 0.0 };
+                                            let gap = ui.spacing().item_spacing.x;
+                                            let room = if show_close { CLOSE_SIZE + gap } else { 0.0 };
                                             let bg = if selected { tab_fill } else { fill };
                                             faded_title(ui, &tab.title(), selected, ui.available_width() - room, bg);
                                             if show_close {
