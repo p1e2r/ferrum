@@ -17,7 +17,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Work out this build's version once, so every platform's app, its file
+  # names and the release all agree.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick the version
+        id: pick
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            base=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+            IFS=. read -r major minor patch <<< "$base"
+            # The next version without a release. If GitHub can't be asked,
+            # stop here rather than guess (pipefail makes a failed call fail the job).
+            tags=$(gh release list -R "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName')
+            while grep -qx "v$major.$minor.$patch" <<< "$tags"; do
+              patch=$((patch + 1))
+            done
+            version="$major.$minor.$patch"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building Ferrum $version"
+
   build:
+    needs: version
+    env:
+      FERRUM_VERSION: ${{ needs.version.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -39,26 +72,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
-
-      # Work out this build's version before compiling, so the app, its file
-      # names and the release all agree (see the release job below).
-      - name: Pick the version
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          else
-            base=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-            IFS=. read -r major minor patch <<< "$base"
-            while gh release view "v$major.$minor.$patch" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; do
-              patch=$((patch + 1))
-            done
-            version="$major.$minor.$patch"
-          fi
-          echo "FERRUM_VERSION=$version" >> "$GITHUB_ENV"
-          echo "Building Ferrum $version"
 
       - name: Linux dependencies
         if: runner.os == 'Linux'
@@ -112,7 +125,7 @@ jobs:
   release:
     # Publish whatever platforms built, even if one failed.
     if: ${{ !cancelled() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
@@ -125,23 +138,9 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Pick the version
-        id: version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          base=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          IFS=. read -r major minor patch <<< "$base"
-          while gh release view "v$major.$minor.$patch" -R "$REPO" >/dev/null 2>&1; do
-            patch=$((patch + 1))
-          done
-          echo "version=$major.$minor.$patch" >> "$GITHUB_OUTPUT"
-
       - name: Publish the release (marked as latest)
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           shopt -s nullglob
           files=(dist/*)
