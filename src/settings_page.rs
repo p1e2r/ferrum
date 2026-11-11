@@ -116,6 +116,7 @@ enum Setting {
     DownloadFolder,
     AskWhereToSave,
     HttpsOnly,
+    DarkWebsites,
     Notifications,
     ClearHistory,
     ClearSiteData,
@@ -187,6 +188,7 @@ const ITEMS: &[Item] = &[
     item(S::Privacy, T::Notifications, "Notifications", "Let sites ask to show notifications. Off by default.", "permission alerts", false),
     item(S::Privacy, T::ClearHistory, "Clear history", "Remove every page from your history and start-page tiles.", "delete erase browsing data", false),
     item(S::Privacy, T::ClearSiteData, "Clear cookies and site data", "Signs you out of websites.", "delete erase storage cache localstorage", false),
+    item(S::WebContent, T::DarkWebsites, "Dark mode for every website", "In dark mode, darken sites that only have a light look.", "dark night black invert theme force", false),
     item(S::WebContent, T::DefaultZoom, "Default page zoom", "Change one tab's zoom with Ctrl +/−.", "zoom size scale", false),
     item(S::Advanced, T::UserAgent, "User agent", "What Ferrum tells websites it is. Leave empty for the default.", "ua user-agent browser string spoof", true),
     item(S::Advanced, T::DataFolder, "Profile folder", "Settings, bookmarks, history, cookies and the crash log.", "data files location", false),
@@ -568,6 +570,9 @@ impl Browser {
                 if ui.button("Clear").clicked() {
                     self.clear_site_data();
                 }
+            },
+            Setting::DarkWebsites => {
+                toggle(ui, &mut s.dark_websites, accent);
             },
             Setting::DefaultZoom => {
                 ui.add(egui::Slider::new(&mut s.default_zoom, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));

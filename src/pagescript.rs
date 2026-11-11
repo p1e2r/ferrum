@@ -13,7 +13,7 @@
 /// Keys Ferrum handles even while a page has focus, with Ctrl (⌘ on macOS).
 const MOD_KEYS: &str = "tTwWnNlLrRfFgGdDbBhHjJoOpPuU,=+-0123456789/[]mMiIsS";
 
-pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String], notifications: &[(String, bool)], allow_notifications: bool) -> String {
+pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String], notifications: &[(String, bool)], allow_notifications: bool, force_dark: bool) -> String {
     let notifications = serde_json::to_string(notifications).unwrap_or_else(|_| "[]".into());
     let list = serde_json::to_string(blocklist).unwrap_or_else(|_| "[]".into());
     let exceptions = serde_json::to_string(exceptions).unwrap_or_else(|_| "[]".into());
@@ -24,6 +24,35 @@ pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String],
   window.__ferrum = true;
   const post = (m) => {{ try {{ window.ipc.postMessage(JSON.stringify(m)); }} catch (e) {{}} }};
   const top = window === window.top;
+
+  // ----- dark mode for sites without one -----
+  // When it's on and the page is still light, invert it (and invert images
+  // and video back), like Chrome's "auto dark mode".
+  let forceDark = {force_dark};
+  const darkStyle = () => {{
+    if (!top) return;
+    const pick = (el) => {{
+      if (!el) return null;
+      const m = getComputedStyle(el).backgroundColor.match(/[\d.]+/g);
+      if (!m || (m.length > 3 && +m[3] === 0)) return null;
+      return (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+    }};
+    let style = document.getElementById("__ferrum_dark");
+    if (forceDark && !style && document.documentElement) {{
+      const light = (pick(document.body) ?? pick(document.documentElement) ?? 1) > 0.55;
+      if (!light) return;
+      style = document.createElement("style");
+      style.id = "__ferrum_dark";
+      style.textContent = "html{{filter:invert(1) hue-rotate(180deg)!important;background:#fff!important}}" +
+        "img,video,picture,canvas,iframe,embed,object,[style*='background-image']{{filter:invert(1) hue-rotate(180deg)!important}}";
+      (document.head || document.documentElement).appendChild(style);
+    }} else if (!forceDark && style) {{
+      style.remove();
+    }}
+  }};
+  window.__ferrumDark = (on) => {{ forceDark = on; darkStyle(); }};
+  document.addEventListener("DOMContentLoaded", darkStyle);
+  addEventListener("load", darkStyle);
 
   // ----- browser shortcuts -----
   const MAC = {mac};

@@ -34,6 +34,7 @@ use crate::reader::ReaderDoc;
 use crate::updates::UpdateStatus;
 
 pub const APP_NAME: &str = "Ferrum";
+const SAFARI_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
 const ZOOM_STEPS: [f32; 13] = [0.3, 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 const SLEEP_CHECK: Duration = Duration::from_secs(60);
 
@@ -288,6 +289,8 @@ pub struct Browser {
     pub(crate) quit_requested: bool,
     /// The light/dark mode last given to pages (for `prefers-color-scheme`).
     page_dark: Option<bool>,
+    /// What open pages were last told about darkening sites.
+    forced_dark: bool,
 
     // Page geometry (egui points) and input
     pub(crate) content_rect: egui::Rect,
@@ -419,6 +422,7 @@ impl Browser {
             on_edge: None,
             quit_requested: false,
             page_dark: None,
+            forced_dark: false,
             content_rect: egui::Rect::NOTHING,
             ppp: window.scale_factor() as f32,
             modifiers: ModifiersState::empty(),
@@ -465,7 +469,7 @@ impl Browser {
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (s.block_trackers, &s.blocker_exceptions, self.blocker.domain_count(), &s.site_permissions, s.allow_notifications).hash(&mut h);
+            (s.block_trackers, &s.blocker_exceptions, self.blocker.domain_count(), &s.site_permissions, s.allow_notifications, self.force_dark()).hash(&mut h);
             h.finish()
         };
         if self.page_script.0 != key || self.page_script.1.is_empty() {
@@ -480,6 +484,7 @@ impl Browser {
                 &s.blocker_exceptions,
                 &notifications,
                 s.allow_notifications,
+                self.force_dark(),
             );
             self.page_script = (key, script);
         }
@@ -532,6 +537,11 @@ impl Browser {
             });
         if !user_agent.is_empty() {
             builder = builder.with_user_agent(user_agent);
+        } else if cfg!(target_os = "macos") {
+            // WKWebView's own user agent leaves out "Version/… Safari/…", and
+            // sites like Google then serve a basic page without dark mode or
+            // newer features. Say what Safari says.
+            builder = builder.with_user_agent(SAFARI_USER_AGENT);
         }
         match builder.build_as_child(&*self.window) {
             Ok(webview) => {
@@ -1723,8 +1733,26 @@ impl Browser {
 
     /// Pages follow the interface's light or dark mode (`prefers-color-scheme`),
     /// so sites like Google switch to their dark look with Ferrum.
+    /// Sites without a dark mode are darkened by the page script.
+    fn force_dark(&self) -> bool {
+        self.profile.settings.dark_websites && self.page_dark == Some(true)
+    }
+
+    /// Tell open pages whether to darken themselves.
+    fn sync_force_dark(&mut self) {
+        let on = self.force_dark();
+        if self.forced_dark == on {
+            return;
+        }
+        self.forced_dark = on;
+        for webview in self.tabs.iter().filter_map(|t| t.webview.as_ref()) {
+            let _ = webview.evaluate_script(&format!("window.__ferrumDark && window.__ferrumDark({on})"));
+        }
+    }
+
     pub(crate) fn apply_page_theme(&mut self, dark: bool) {
         if self.page_dark == Some(dark) {
+            self.sync_force_dark();
             return;
         }
         self.page_dark = Some(dark);
@@ -1746,6 +1774,7 @@ impl Browser {
                 settings.set_gtk_application_prefer_dark_theme(dark);
             }
         }
+        self.sync_force_dark();
     }
 
     /// Give the keyboard back to Ferrum's own window (from a page).

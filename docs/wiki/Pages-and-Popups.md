@@ -27,3 +27,7 @@ Input to a popup window goes to its own egui context (`Overlays::handle_event`).
 ## Light and dark pages
 
 `Browser::apply_page_theme` makes pages' `prefers-color-scheme` follow the interface: the window appearance on macOS, `set_theme` on WebView2, GTK's dark preference on Linux. With the Ferrum theme on "System", it follows the OS.
+
+On macOS, web views report Safari's user agent by default: WKWebView's own leaves out the `Version/… Safari/…` part, and Google and other sites then serve a basic page without dark mode.
+
+**Dark mode for every website** (Settings → Web content, off by default): in dark mode, the [page script](Page-Script) darkens pages whose background is still light by inverting the page and inverting images, video and canvases back.
