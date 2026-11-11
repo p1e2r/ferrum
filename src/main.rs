@@ -15,6 +15,7 @@ mod adblock;
 mod blocker;
 mod bookmarks_io;
 mod browser;
+mod browser_import;
 mod devtools;
 mod downloads;
 mod features_ui;

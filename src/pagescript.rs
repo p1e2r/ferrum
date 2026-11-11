@@ -29,30 +29,65 @@ pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String],
   // When it's on and the page is still light, invert it (and invert images
   // and video back), like Chrome's "auto dark mode".
   let forceDark = {force_dark};
+  const lum = (c) => {{
+    const m = (c || "").match(/[\d.]+/g);
+    if (!m || (m.length > 3 && +m[3] < 0.5)) return null;
+    return (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+  }};
+  const bgAt = (el) => {{
+    for (; el && el.nodeType === 1; el = el.parentElement) {{
+      const l = lum(getComputedStyle(el).backgroundColor);
+      if (l !== null) return l;
+    }}
+    return null;
+  }};
+  // Only darken pages that are clearly light: light background at almost
+  // every sampled point and dark text. Pages with their own dark look are left alone.
+  const pageIsLight = () => {{
+    const root = document.documentElement, body = document.body;
+    if (!root || !body) return false;
+    const text = lum(getComputedStyle(body).color);
+    if (text !== null && text > 0.55) return false;
+    const scheme = getComputedStyle(root).colorScheme || "";
+    let light = 0;
+    const points = [[0.5, 0.5], [0.25, 0.3], [0.75, 0.3], [0.25, 0.75], [0.75, 0.75], [0.5, 0.12]];
+    for (const [x, y] of points) {{
+      let el = document.elementFromPoint(innerWidth * x, innerHeight * y);
+      if (el && /^(img|video|canvas|picture|svg|iframe)$/i.test(el.tagName)) el = el.parentElement;
+      let l = bgAt(el);
+      if (l === null) l = scheme.includes("dark") ? 0 : 1;
+      if (l > 0.7) light++;
+    }}
+    return light >= points.length - 1;
+  }};
   const darkStyle = () => {{
-    if (!top) return;
-    const pick = (el) => {{
-      if (!el) return null;
-      const m = getComputedStyle(el).backgroundColor.match(/[\d.]+/g);
-      if (!m || (m.length > 3 && +m[3] === 0)) return null;
-      return (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
-    }};
+    if (!top || !document.documentElement) return;
     let style = document.getElementById("__ferrum_dark");
-    if (forceDark && !style && document.documentElement) {{
-      const light = (pick(document.body) ?? pick(document.documentElement) ?? 1) > 0.55;
-      if (!light) return;
+    if (!forceDark) {{
+      if (style) style.remove();
+      return;
+    }}
+    // Measure the page as it is, without our filter.
+    if (style) style.disabled = true;
+    const light = pageIsLight();
+    if (style) style.disabled = false;
+    if (light && !style) {{
       style = document.createElement("style");
       style.id = "__ferrum_dark";
       style.textContent = "html{{filter:invert(1) hue-rotate(180deg)!important;background:#fff!important}}" +
         "img,video,picture,canvas,iframe,embed,object,[style*='background-image']{{filter:invert(1) hue-rotate(180deg)!important}}";
       (document.head || document.documentElement).appendChild(style);
-    }} else if (!forceDark && style) {{
+    }} else if (!light && style) {{
       style.remove();
     }}
   }};
   window.__ferrumDark = (on) => {{ forceDark = on; darkStyle(); }};
   document.addEventListener("DOMContentLoaded", darkStyle);
-  addEventListener("load", darkStyle);
+  addEventListener("load", () => {{
+    darkStyle();
+    setTimeout(darkStyle, 1500);
+    setTimeout(darkStyle, 4000);
+  }});
 
   // ----- browser shortcuts -----
   const MAC = {mac};

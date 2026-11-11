@@ -219,6 +219,13 @@ pub enum SidePanel {
     Downloads,
 }
 
+/// What a link's right-click menu is for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkMenu {
+    Bookmark(String),
+    Frequent(String),
+}
+
 /// A site asking to show notifications: (tab id, host).
 pub type PermissionAsk = (u64, String);
 
@@ -264,6 +271,16 @@ pub struct Browser {
     pub(crate) site_info_open: bool,
     /// The tab whose right-click menu is open, and where.
     pub(crate) tab_menu: Option<(usize, egui::Pos2)>,
+    /// The right-click menu of a bookmark or start-page tile, and where.
+    pub(crate) link_menu: Option<(LinkMenu, egui::Pos2)>,
+    /// The bookmark being edited in the bookmarks panel: (its URL, new title, new URL).
+    pub(crate) bookmark_edit: Option<(String, String, String)>,
+    /// The last removed bookmark and where it was, for "Undo".
+    pub(crate) removed_bookmark: Option<(usize, crate::profile::Bookmark)>,
+    /// Other browsers found on this computer (looked up when the import settings open).
+    pub(crate) import_sources: Option<Vec<crate::browser_import::Source>>,
+    pub(crate) import_choice: (bool, bool),
+    pub(crate) bookmark_filter: String,
     /// A web notification: (site, title, body, since).
     pub(crate) notification: Option<(String, String, String, Instant)>,
     /// Sites waiting for an answer to "show notifications?".
@@ -403,6 +420,12 @@ impl Browser {
             update: None,
             site_info_open: false,
             tab_menu: None,
+            link_menu: None,
+            bookmark_edit: None,
+            removed_bookmark: None,
+            import_sources: None,
+            import_choice: (true, true),
+            bookmark_filter: String::new(),
             notification: None,
             permission_asks: Vec::new(),
             remember_permission: true,
@@ -1146,10 +1169,11 @@ impl Browser {
 
     /// Close the menu and every popup.
     pub(crate) fn close_popups(&mut self) {
-        let any = self.menu_open || self.site_info_open || self.tab_menu.is_some() || self.editing;
+        let any = self.menu_open || self.site_info_open || self.tab_menu.is_some() || self.link_menu.is_some() || self.editing;
         self.menu_open = false;
         self.site_info_open = false;
         self.tab_menu = None;
+        self.link_menu = None;
         if self.editing {
             self.editing = false;
             self.sync_location();
@@ -1191,8 +1215,9 @@ impl Browser {
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } => {
                 // Clicks inside a popup go to the popup's own window, so any
                 // click here is outside it.
-                if self.tab_menu.is_some() {
+                if self.tab_menu.is_some() || self.link_menu.is_some() {
                     self.tab_menu = None;
+                    self.link_menu = None;
                 }
             },
             _ => {},
@@ -1306,7 +1331,7 @@ impl Browser {
             "0" if cmd => self.set_zoom(1.0),
             "q" if cmd && cfg!(target_os = "macos") => self.request_quit(),
             "F11" => self.toggle_window_fullscreen(),
-            "Escape" if self.site_info_open || self.menu_open || self.tab_menu.is_some() => self.close_popups(),
+            "Escape" if self.site_info_open || self.menu_open || self.tab_menu.is_some() || self.link_menu.is_some() => self.close_popups(),
             "Escape" if self.find.open => self.close_find(),
             "Escape" if self.active_tab().reader.is_some() => self.toggle_reader(),
             "ArrowLeft" if s.alt => self.go_back(),
@@ -1561,6 +1586,95 @@ impl Browser {
         }
     }
 
+    /// Remove a bookmark, keeping it for "Undo".
+    pub(crate) fn remove_bookmark(&mut self, url: &str) {
+        if let Some((i, b)) = self.profile.remove_bookmark(url) {
+            self.toast(format!("Removed “{}”", truncate_title(&b.title)));
+            if self.bookmark_edit.as_ref().is_some_and(|(u, ..)| *u == b.url) {
+                self.bookmark_edit = None;
+            }
+            self.removed_bookmark = Some((i, b));
+        }
+    }
+
+    pub(crate) fn undo_remove_bookmark(&mut self) {
+        if let Some((i, b)) = self.removed_bookmark.take() {
+            if !self.profile.is_bookmarked(&b.url) {
+                let i = i.min(self.profile.bookmarks.len());
+                self.profile.bookmarks.insert(i, b);
+                self.profile.mark_dirty();
+            }
+        }
+    }
+
+    /// Save an edited bookmark. An address that isn't a URL is read like the address bar does.
+    pub(crate) fn save_bookmark_edit(&mut self, orig: &str, title: String, url: String) {
+        let url = match Url::parse(url.trim()) {
+            Ok(u) => u.to_string(),
+            Err(_) => match input_to_url(url.trim(), &self.profile.settings) {
+                Some(u) => u.to_string(),
+                None => {
+                    self.toast("That address isn't valid");
+                    return;
+                },
+            },
+        };
+        if url != orig && self.profile.is_bookmarked(&url) {
+            self.toast("That page is already bookmarked");
+            return;
+        }
+        if let Some(b) = self.profile.bookmarks.iter_mut().find(|b| b.url == orig) {
+            b.title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
+            b.url = url;
+            self.profile.mark_dirty();
+        }
+    }
+
+    /// Remove a bookmark, or a page from history (start-page tiles).
+    pub(crate) fn remove_link(&mut self, target: &LinkMenu) {
+        match target {
+            LinkMenu::Bookmark(url) => self.remove_bookmark(url),
+            LinkMenu::Frequent(url) => {
+                self.profile.history.retain(|h| h.url != *url);
+                self.profile.mark_dirty();
+            },
+        }
+    }
+
+    /// Open the bookmarks panel with one bookmark ready to edit.
+    pub(crate) fn edit_bookmark(&mut self, url: &str) {
+        if let Some(b) = self.profile.bookmarks.iter().find(|b| b.url == url) {
+            self.bookmark_edit = Some((b.url.clone(), b.title.clone(), b.url.clone()));
+            self.panel = SidePanel::Bookmarks;
+        }
+    }
+
+    /// Import bookmarks and/or history from another browser on this computer.
+    pub(crate) fn import_from_browser(&mut self, source: &crate::browser_import::Source) {
+        let (bookmarks, history) = self.import_choice;
+        let got = crate::browser_import::import(source, bookmarks, history);
+        let found_any = !got.bookmarks.is_empty() || !got.history.is_empty();
+        let b = self.profile.import_bookmarks(got.bookmarks);
+        let h = self.profile.import_history(got.history);
+        let mut parts = Vec::new();
+        if bookmarks {
+            parts.push(format!("{b} bookmark{}", if b == 1 { "" } else { "s" }));
+        }
+        if history {
+            parts.push(format!("{h} page{} of history", if h == 1 { "" } else { "s" }));
+        }
+        match got.notes.first() {
+            Some(note) if !found_any => {
+                let _ = rfd::MessageDialog::new()
+                    .set_title(format!("Import from {}", source.name))
+                    .set_description(note.as_str())
+                    .set_level(rfd::MessageLevel::Warning)
+                    .show();
+            },
+            _ => self.toast(format!("Imported {} from {}", parts.join(" and "), source.name)),
+        }
+    }
+
     pub(crate) fn export_bookmarks(&mut self) {
         let Some(path) = rfd::FileDialog::new().set_file_name("ferrum-bookmarks.html").add_filter("Bookmarks file", &["html"]).save_file() else { return };
         match std::fs::write(&path, crate::bookmarks_io::export(&self.profile.bookmarks)) {
@@ -1735,7 +1849,7 @@ impl Browser {
     /// so sites like Google switch to their dark look with Ferrum.
     /// Sites without a dark mode are darkened by the page script.
     fn force_dark(&self) -> bool {
-        self.profile.settings.dark_websites && self.page_dark == Some(true)
+        self.profile.settings.force_dark_websites && self.page_dark == Some(true)
     }
 
     /// Tell open pages whether to darken themselves.
@@ -1889,4 +2003,9 @@ mod tests {
         assert!(super::looks_like_block_page("trustpositif.komdigi.go.id"));
         assert!(!super::looks_like_block_page("duckduckgo html results for rust"));
     }
+}
+
+/// A bookmark title short enough for a notice.
+fn truncate_title(title: &str) -> String {
+    if title.chars().count() <= 40 { title.to_string() } else { format!("{}…", title.chars().take(39).collect::<String>()) }
 }

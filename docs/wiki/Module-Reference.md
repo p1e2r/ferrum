@@ -96,6 +96,10 @@ After drawing, if any setting changed the profile is marked for saving and `Brow
 
 `Source` and `draw_source` (line-numbered, colour-highlighted HTML; only the visible lines are laid out). Developer tools are the engine's own inspector (`WebView::open_devtools`).
 
+## `browser_import.rs` — import from other browsers
+
+`find_sources` lists browser profiles on this computer (Chrome, Edge, Brave, Vivaldi, Opera, Chromium, Arc, Firefox, Safari); `import(source, bookmarks, history)` reads them: Chromium's `Bookmarks` JSON and `History` database, Firefox's `places.sqlite`, Safari's `Bookmarks.plist` and `History.db` (macOS asks for Full Disk Access for Safari). Databases are copied before reading, because the other browser may have them locked. Shown in Settings → Advanced → Import from another browser.
+
 ## `bookmarks_io.rs`, `updates.rs`
 
 `export` / `import` of Netscape bookmark files (folders are flattened; only http/https/file links are imported). `updates::check` asks the GitHub releases API on a background thread and compares versions numerically (`parse_version`).

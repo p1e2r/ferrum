@@ -130,6 +130,7 @@ enum Setting {
     SitePermissions,
     SleepTabs,
     BookmarkFile,
+    ImportBrowser,
     CheckUpdates,
     TitleBar,
 }
@@ -192,6 +193,7 @@ const ITEMS: &[Item] = &[
     item(S::WebContent, T::DefaultZoom, "Default page zoom", "Change one tab's zoom with Ctrl +/−.", "zoom size scale", false),
     item(S::Advanced, T::UserAgent, "User agent", "What Ferrum tells websites it is. Leave empty for the default.", "ua user-agent browser string spoof", true),
     item(S::Advanced, T::DataFolder, "Profile folder", "Settings, bookmarks, history, cookies and the crash log.", "data files location", false),
+    item(S::Advanced, T::ImportBrowser, "Import from another browser", "Copy bookmarks and history from browsers on this computer. Nothing is changed in the other browser.", "import chrome edge firefox safari brave opera vivaldi arc migrate switch move", true),
     item(S::Advanced, T::BookmarkFile, "Import or export bookmarks", "Bookmark files (HTML) from Firefox, Chrome, Edge and Safari can be imported, and exported files open in any of them.", "import export html backup migrate move", false),
     item(S::Advanced, T::CheckUpdates, "Check for updates", "Look for a newer Ferrum on GitHub once a day.", "update upgrade new version release", false),
     item(S::Advanced, T::ResetAll, "Reset all settings", "Bookmarks, history and cookies are kept.", "defaults restore factory", false),
@@ -572,7 +574,7 @@ impl Browser {
                 }
             },
             Setting::DarkWebsites => {
-                toggle(ui, &mut s.dark_websites, accent);
+                toggle(ui, &mut s.force_dark_websites, accent);
             },
             Setting::DefaultZoom => {
                 ui.add(egui::Slider::new(&mut s.default_zoom, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
@@ -668,6 +670,38 @@ impl Browser {
                 toggle(ui, &mut s.sleep_tabs, accent);
                 if s.sleep_tabs {
                     ui.add(egui::DragValue::new(&mut s.sleep_minutes).range(5..=480).prefix("after ").suffix(" min"));
+                }
+            },
+            Setting::ImportBrowser => {
+                if self.import_sources.is_none() {
+                    self.import_sources = Some(crate::browser_import::find_sources());
+                }
+                let sources = self.import_sources.clone().unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.import_choice.0, "Bookmarks");
+                    ui.checkbox(&mut self.import_choice.1, "History");
+                });
+                ui.add_space(4.0);
+                let mut chosen = None;
+                if sources.is_empty() {
+                    ui.label(RichText::new("No other browsers found on this computer.").weak());
+                }
+                let (any, _) = (self.import_choice.0 || self.import_choice.1, ());
+                for source in &sources {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&source.name).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add_enabled(any, egui::Button::new("Import")).clicked() {
+                                chosen = Some(source.clone());
+                            }
+                        });
+                    });
+                }
+                if ui.small_button("Look again").clicked() {
+                    self.import_sources = None;
+                }
+                if let Some(source) = chosen {
+                    self.import_from_browser(&source);
                 }
             },
             Setting::BookmarkFile => {

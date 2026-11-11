@@ -13,6 +13,9 @@ categories = ["gui", "web-programming"]
 # Pages are drawn by the system's web engine through wry: WebKit (WKWebView)
 # on macOS, WebView2 (Chromium) on Windows, WebKitGTK on Linux.
 wry = { version = "0.57", features = ["devtools"] }
+# Reading other browsers' bookmarks and history (import).
+rusqlite = { version = "0.42", features = ["bundled"] }
+plist = "1.10"
 winit = "0.30.13"
 egui = "0.34.3"
 egui-winit = { version = "0.34.3", default-features = false, features = ["clipboard", "links", "x11"] }

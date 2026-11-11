@@ -32,6 +32,7 @@ pub enum OverlayKind {
     Suggestions,
     SiteInfo,
     TabMenu,
+    LinkMenu,
     Toast,
     Notification,
     SearchBlocked,

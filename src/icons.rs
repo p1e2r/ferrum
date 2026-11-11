@@ -31,6 +31,8 @@ pub enum Icon {
     Shield,
     Reader,
     Code,
+    Trash,
+    Edit,
     Minimize,
     Maximize,
     Restore,
@@ -77,9 +79,9 @@ pub fn tab_close_button(ui: &mut Ui, size: f32, tooltip: &str) -> Response {
             ui.painter().circle_filled(rect.center(), size * 0.5, text.gamma_multiply(if pressed { 0.28 } else { 0.16 }));
         }
         let color = if hovered { text } else { visuals.text_color() };
-        let d = size * 0.19;
+        let d = size * 0.2;
         let c = rect.center();
-        let s = Stroke::new(1.3_f32, color);
+        let s = Stroke::new(1.5_f32, color);
         ui.painter().line_segment([c - vec2(d, d), c + vec2(d, d)], s);
         ui.painter().line_segment([c + vec2(-d, d), c + vec2(d, -d)], s);
     }
@@ -340,6 +342,37 @@ pub fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
             p.line_segment([pos2(r.right() - w * 0.3, r.top() + h * 0.15), pos2(r.right(), c.y)], s);
             p.line_segment([pos2(r.right(), c.y), pos2(r.right() - w * 0.3, r.bottom() - h * 0.15)], s);
             p.line_segment([pos2(c.x + w * 0.1, r.top()), pos2(c.x - w * 0.1, r.bottom())], s);
+        },
+        Icon::Trash => {
+            // Lid, handle, and a can with two ribs.
+            p.line_segment([pos2(r.left(), r.top() + h * 0.2), pos2(r.right(), r.top() + h * 0.2)], s);
+            p.line_segment([pos2(c.x - w * 0.15, r.top() + h * 0.2), pos2(c.x - w * 0.15, r.top())], s);
+            p.line_segment([pos2(c.x - w * 0.15, r.top()), pos2(c.x + w * 0.15, r.top())], s);
+            p.line_segment([pos2(c.x + w * 0.15, r.top()), pos2(c.x + w * 0.15, r.top() + h * 0.2)], s);
+            let can = [
+                pos2(r.left() + w * 0.12, r.top() + h * 0.2),
+                pos2(r.left() + w * 0.2, r.bottom()),
+                pos2(r.right() - w * 0.2, r.bottom()),
+                pos2(r.right() - w * 0.12, r.top() + h * 0.2),
+            ];
+            p.line_segment([can[0], can[1]], s);
+            p.line_segment([can[1], can[2]], s);
+            p.line_segment([can[2], can[3]], s);
+            p.line_segment([pos2(c.x - w * 0.12, r.top() + h * 0.38), pos2(c.x - w * 0.12, r.bottom() - h * 0.15)], s);
+            p.line_segment([pos2(c.x + w * 0.12, r.top() + h * 0.38), pos2(c.x + w * 0.12, r.bottom() - h * 0.15)], s);
+        },
+        Icon::Edit => {
+            // A pencil, tip at the bottom left.
+            let tip = pos2(r.left(), r.bottom());
+            let a = pos2(r.left() + w * 0.22, r.bottom());
+            let b = pos2(r.left(), r.bottom() - h * 0.22);
+            let a2 = pos2(r.right(), r.top() + h * 0.22);
+            let b2 = pos2(r.right() - w * 0.22, r.top());
+            p.line_segment([tip, a], s);
+            p.line_segment([tip, b], s);
+            p.line_segment([a, a2], s);
+            p.line_segment([b, b2], s);
+            p.line_segment([a2, b2], s);
         },
     }
 }

@@ -8,11 +8,11 @@ use std::time::Duration;
 use egui::text::{CCursor, CCursorRange};
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Key as EKey, Layout, Margin,
-    RichText, Sense, Ui, Vec2, pos2, vec2,
+    RichText, Sense, Stroke, Ui, Vec2, pos2, vec2,
 };
 use url::Url;
 
-use crate::browser::{APP_NAME, Browser, SidePanel};
+use crate::browser::{APP_NAME, Browser, LinkMenu, SidePanel};
 use crate::downloads::{Status, human_size, open_path};
 use crate::icons::{Icon, icon, icon_button};
 use crate::profile::{Settings, StartBackground, TabLayout, ThemeChoice};
@@ -163,6 +163,38 @@ fn drop_target(rects: &[egui::Rect], from: usize, before: impl Fn(&egui::Rect) -
 fn clamp_to_group(tabs: &[crate::browser::Tab], from: usize, target: usize) -> usize {
     let pinned = tabs.iter().filter(|t| t.pinned).count();
     if tabs[from].pinned { target.min(pinned.saturating_sub(1)) } else { target.max(pinned) }
+}
+
+/// A tab's close button.
+const CLOSE_SIZE: f32 = 22.0;
+
+/// A tab title that fades out, instead of ending in "…", where it runs into
+/// the close button. `bg` is the colour behind it.
+fn faded_title(ui: &mut Ui, title: &str, strong: bool, width: f32, bg: Color32) {
+    let width = width.max(0.0);
+    let color = if strong { ui.visuals().strong_text_color() } else { ui.visuals().text_color() };
+    let galley = ui.painter().layout_no_wrap(title.to_string(), FontId::proportional(13.0), color);
+    let height = galley.size().y.max(18.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let pos = pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+    let overflow = galley.size().x > rect.width();
+    ui.painter().with_clip_rect(rect.intersect(ui.clip_rect())).galley(pos, galley, color);
+    if overflow {
+        let fade = 24.0_f32.min(rect.width());
+        let r = egui::Rect::from_min_max(pos2(rect.right() - fade, rect.top()), rect.max);
+        let clear = Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 0);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(r.left_top(), clear);
+        mesh.colored_vertex(r.right_top(), bg);
+        mesh.colored_vertex(r.left_bottom(), clear);
+        mesh.colored_vertex(r.right_bottom(), bg);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 2, 3);
+        ui.painter().with_clip_rect(ui.clip_rect()).add(egui::Shape::mesh(mesh));
+    }
 }
 
 /// Width of the minimise / maximise / close group, as in Chrome on Windows.
@@ -319,10 +351,11 @@ impl Browser {
                                 if tab.pinned {
                                     icon(ui, Icon::Pin, 12.0, ui.visuals().weak_text_color());
                                 }
-                                let text = RichText::new(tab.title()).size(13.0);
-                                ui.add(egui::Label::new(if selected { text.strong() } else { text }).truncate().selectable(false));
+                                let room = CLOSE_SIZE + 2.0 + if tab.playing || tab.muted { 20.0 } else { 0.0 };
+                                let bg = if selected { ui.visuals().extreme_bg_color } else { ui.visuals().panel_fill };
+                                faded_title(ui, &tab.title(), selected, ui.available_width() - room, bg);
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    close_rect = Some(crate::icons::tab_close_button(ui, 18.0, "Close tab (Ctrl+W)").rect);
+                                    close_rect = Some(crate::icons::tab_close_button(ui, CLOSE_SIZE, "Close tab (Ctrl+W)").rect);
                                     if tab.playing || tab.muted {
                                         let i = if tab.muted { Icon::Muted } else { Icon::Speaker };
                                         speaker_rect = Some(icon_button(ui, i, 18.0, true, "Mute / unmute tab").rect);
@@ -587,15 +620,15 @@ impl Browser {
                                                 let tip = if tab.muted { "Unmute tab" } else { "Mute tab" };
                                                 speaker_rect = Some(icon_button(ui, i, 18.0, true, tip).rect);
                                             }
-                                            let title = tab.title();
-                                            let text = RichText::new(title.clone()).size(13.0);
-                                            let text = if selected { text.strong() } else { text };
-                                            ui.add(egui::Label::new(text).truncate().selectable(false));
-                                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                                if width > 90.0 || selected {
-                                                    close_rect = Some(crate::icons::tab_close_button(ui, 18.0, "Close tab (Ctrl+W)").rect);
-                                                }
-                                            });
+                                            let show_close = width > 90.0 || selected;
+                                            let room = if show_close { CLOSE_SIZE + 2.0 } else { 0.0 };
+                                            let bg = if selected { tab_fill } else { fill };
+                                            faded_title(ui, &tab.title(), selected, ui.available_width() - room, bg);
+                                            if show_close {
+                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                    close_rect = Some(crate::icons::tab_close_button(ui, CLOSE_SIZE, "Close tab (Ctrl+W)").rect);
+                                                });
+                                            }
                                         });
                                     });
                                     rects.push(resp.response.rect);
@@ -852,11 +885,16 @@ impl Browser {
 
     fn draw_bookmarks_bar(&mut self, ui: &mut Ui) {
         let mut open: Option<(String, bool)> = None;
+        let mut menu = None;
         egui::Panel::top("bookmarks_bar")
             .frame(Frame::new().fill(ui.visuals().extreme_bg_color).inner_margin(Margin { left: 8, right: 8, top: 0, bottom: 4 }))
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
+                    if self.profile.bookmarks.is_empty() {
+                        let ctrl = if cfg!(target_os = "macos") { "⌘D" } else { "Ctrl+D" };
+                        ui.label(RichText::new(format!("Bookmarks appear here. Press {ctrl} on a page to add one.")).size(12.0).weak());
+                    }
                     for b in &self.profile.bookmarks {
                         let resp = ui
                             .scope(|ui| {
@@ -868,7 +906,7 @@ impl Browser {
                                 ui.interact(inner.response.rect.expand(3.0), Id::new(("bm", &b.url)), Sense::click())
                             })
                             .inner
-                            .on_hover_text(&b.url);
+                            .on_hover_text(format!("{}\n{}\nRight-click to edit or remove", b.title, b.url));
                         if resp.hovered() {
                             ui.painter().rect_filled(resp.rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
                         }
@@ -879,9 +917,16 @@ impl Browser {
                         if resp.middle_clicked() {
                             open = Some((b.url.clone(), true));
                         }
+                        if resp.secondary_clicked() {
+                            let at = resp.interact_pointer_pos().unwrap_or(resp.rect.left_bottom());
+                            menu = Some((LinkMenu::Bookmark(b.url.clone()), at));
+                        }
                     }
                 });
             });
+        if menu.is_some() {
+            self.link_menu = menu;
+        }
         if let Some((url, new_tab)) = open {
             match Url::parse(&url) {
                 Ok(u) if new_tab => self.open_background_tab(u),
@@ -1036,7 +1081,16 @@ impl Browser {
                 ui.add_space(26.0);
 
                 // A centred grid of site tiles.
-                let tiles = |ui: &mut Ui, heading: &str, items: Vec<(String, String)>, go: &mut Option<(String, bool)>| {
+                // Each tile opens on click, has a right-click menu, and an ✕ on hover.
+                let mut menu: Option<(LinkMenu, egui::Pos2)> = None;
+                let mut remove: Option<LinkMenu> = None;
+                let tiles = |ui: &mut Ui,
+                             heading: &str,
+                             items: Vec<(String, String)>,
+                             bookmarks: bool,
+                             go: &mut Option<(String, bool)>,
+                             menu: &mut Option<(LinkMenu, egui::Pos2)>,
+                             remove: &mut Option<LinkMenu>| {
                     if items.is_empty() {
                         return;
                     }
@@ -1057,9 +1111,28 @@ impl Browser {
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(8.0)).layout(Layout::top_down(Align::Center)));
                                 letter_icon(&mut child, title, url, 40.0);
                                 child.add(egui::Label::new(RichText::new(truncate(title, 14)).size(12.0).color(text_color)).selectable(false));
-                                let resp = resp.on_hover_text(url);
-                                if resp.clicked() {
+                                let target = if bookmarks { LinkMenu::Bookmark(url.clone()) } else { LinkMenu::Frequent(url.clone()) };
+                                let x = egui::Rect::from_center_size(r.right_top() + vec2(-14.0, 14.0), Vec2::splat(18.0));
+                                let over_x = resp.hover_pos().is_some_and(|p| x.contains(p));
+                                if resp.hovered() {
+                                    let color = if over_x { text_color } else { weak_color };
+                                    if over_x {
+                                        ui.painter().circle_filled(x.center(), 9.0, ui.visuals().widgets.active.weak_bg_fill);
+                                    }
+                                    let d = vec2(3.5, 3.5);
+                                    let k = x.center();
+                                    ui.painter().line_segment([k - d, k + d], Stroke::new(1.5_f32, color));
+                                    ui.painter().line_segment([k + vec2(-d.x, d.y), k + vec2(d.x, -d.y)], Stroke::new(1.5_f32, color));
+                                }
+                                let tip = if bookmarks { "Remove bookmark" } else { "Remove from this page" };
+                                let resp = if over_x { resp.on_hover_text(tip) } else { resp.on_hover_text(url) };
+                                if resp.clicked() && over_x {
+                                    *remove = Some(target.clone());
+                                } else if resp.clicked() {
                                     *go = Some((url.clone(), false));
+                                }
+                                if resp.secondary_clicked() {
+                                    *menu = Some((target, resp.interact_pointer_pos().unwrap_or(r.center())));
                                 }
                                 if resp.middle_clicked() {
                                     *go = Some((url.clone(), true));
@@ -1072,7 +1145,7 @@ impl Browser {
 
                 if settings.start_show_bookmarks {
                     let items = self.profile.bookmarks.iter().take(16).map(|b| (b.title.clone(), b.url.clone())).collect();
-                    tiles(ui, "Bookmarks", items, &mut go);
+                    tiles(ui, "Bookmarks", items, true, &mut go, &mut menu, &mut remove);
                 }
                 if settings.start_show_frequent {
                     let mut top: Vec<_> = self.profile.history.iter().filter(|h| !self.profile.is_bookmarked(&h.url)).collect();
@@ -1082,7 +1155,13 @@ impl Browser {
                         .take(8)
                         .map(|h| (if h.title.is_empty() { h.url.clone() } else { h.title.clone() }, h.url.clone()))
                         .collect();
-                    tiles(ui, "Frequently visited", items, &mut go);
+                    tiles(ui, "Frequently visited", items, false, &mut go, &mut menu, &mut remove);
+                }
+                if menu.is_some() {
+                    self.link_menu = menu;
+                }
+                if let Some(target) = remove {
+                    self.remove_link(&target);
                 }
             });
         });
@@ -1140,30 +1219,33 @@ impl Browser {
             });
     }
 
-    fn link_row(ui: &mut Ui, id: impl std::hash::Hash, title: &str, url: &str) -> (bool, bool, bool) {
-        let mut remove = false;
-        let resp = ui
-            .horizontal(|ui| {
-                letter_icon(ui, if title.is_empty() { url } else { title }, url, 20.0);
-                ui.vertical(|ui| {
-                    ui.add(egui::Label::new(RichText::new(if title.is_empty() { url } else { title }).size(13.0)).truncate().selectable(false));
-                    ui.add(egui::Label::new(RichText::new(url).size(11.0).weak()).truncate().selectable(false));
-                });
-            })
-            .response;
-        let resp = ui.interact(resp.rect, Id::new(("row", id)), Sense::click()).on_hover_text(url);
-        if resp.hovered() {
-            let r = resp.rect;
-            let close = egui::Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), Vec2::splat(20.0));
-            let c = ui.interact(close, Id::new(("row-x", r.min.x as i32, r.min.y as i32)), Sense::click());
-            let color = if c.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
-            let d = vec2(4.0, 4.0);
-            let k = close.center();
-            ui.painter().line_segment([k - d, k + d], egui::Stroke::new(1.5_f32, color));
-            ui.painter().line_segment([k + vec2(-d.x, d.y), k + vec2(d.x, -d.y)], egui::Stroke::new(1.5_f32, color));
-            remove = c.clicked();
+    /// A row with an icon, title and address. `buttons` adds buttons at the
+    /// right end (right to left; the bool says whether the row is hovered).
+    /// They take their own space, so clicking one never opens the link.
+    fn link_row(ui: &mut Ui, id: impl std::hash::Hash, title: &str, url: &str, buttons: impl FnOnce(&mut Ui, bool)) -> egui::Response {
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+        let hovered = ui.rect_contains_pointer(rect);
+        if hovered {
+            ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
         }
-        (resp.clicked() && !remove, resp.middle_clicked(), remove)
+        let mut right = rect.right();
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            buttons(ui, hovered);
+            right = ui.available_rect_before_wrap().right();
+        });
+        let text_rect = egui::Rect::from_min_max(rect.min, pos2(right - 4.0, rect.max.y));
+        let resp = ui.interact(text_rect, Id::new(("row", id)), Sense::click()).on_hover_text(url);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect.shrink2(vec2(6.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+            let shown = if title.is_empty() { url } else { title };
+            letter_icon(ui, shown, url, 20.0);
+            ui.vertical(|ui| {
+                ui.add_space(3.0);
+                ui.add(egui::Label::new(RichText::new(shown).size(13.0)).truncate().selectable(false));
+                ui.add(egui::Label::new(RichText::new(url).size(11.0).weak()).truncate().selectable(false));
+            });
+        });
+        resp
     }
 
     fn draw_history(&mut self, ui: &mut Ui) {
@@ -1195,11 +1277,16 @@ impl Browser {
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, 40.0, entries.len(), |ui, range| {
             for &i in &entries[range] {
                 let h = &self.profile.history[i];
-                let (click, middle, x) = Self::link_row(ui, ("h", i), &h.title, &h.url);
-                if click {
+                let mut x = false;
+                let resp = Self::link_row(ui, ("h", i), &h.title, &h.url, |ui, hovered| {
+                    if hovered {
+                        x = icon_button(ui, Icon::Close, 22.0, true, "Remove from history").clicked();
+                    }
+                });
+                if resp.clicked() {
                     open = Some((h.url.clone(), false));
                 }
-                if middle {
+                if resp.middle_clicked() {
                     open = Some((h.url.clone(), true));
                 }
                 if x {
@@ -1216,59 +1303,152 @@ impl Browser {
 
     fn draw_bookmarks(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            if ui.small_button("Import…").on_hover_text("From an HTML file exported by Firefox, Chrome, Edge or Safari").clicked() {
-                self.import_bookmarks();
+            if ui.button("Import from browser…").on_hover_text("Chrome, Edge, Firefox, Safari, Brave…").clicked() {
+                self.settings_section = crate::settings_page::Section::Advanced;
+                self.settings_query = "import".into();
+                self.open_settings();
             }
-            if ui.small_button("Export…").on_hover_text("As an HTML file other browsers can import").clicked() {
-                self.export_bookmarks();
-            }
+            ui.menu_button("More", |ui| {
+                if ui.button("Import bookmarks file (HTML)…").clicked() {
+                    self.import_bookmarks();
+                    ui.close();
+                }
+                if ui.button("Export bookmarks…").clicked() {
+                    self.export_bookmarks();
+                    ui.close();
+                }
+            });
         });
-        if let Some(url) = self.active_tab().url() {
-            if !self.profile.is_bookmarked(url.as_str()) && ui.button("Bookmark this page").clicked() {
+        ui.add_space(4.0);
+        if let Some(url) = self.active_tab().url().filter(|u| matches!(u.scheme(), "http" | "https" | "file")) {
+            if !self.profile.is_bookmarked(url.as_str()) && ui.button("☆  Bookmark this page").clicked() {
                 self.toggle_bookmark();
             }
         }
         ui.checkbox(&mut self.profile.settings.show_bookmarks_bar, "Show bookmarks bar");
+        ui.add_space(4.0);
+        ui.add(egui::TextEdit::singleline(&mut self.bookmark_filter).hint_text("Search bookmarks").desired_width(f32::INFINITY));
+        if let Some((_, b)) = &self.removed_bookmark {
+            let title = truncate(&b.title, 30);
+            let mut undo = false;
+            let mut dismiss = false;
+            Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(6.0).inner_margin(Margin::symmetric(8, 4)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Removed “{title}”")).size(12.0));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        dismiss = icon_button(ui, Icon::Close, 18.0, true, "Dismiss").clicked();
+                        undo = ui.small_button("Undo").clicked();
+                    });
+                });
+            });
+            if undo {
+                self.undo_remove_bookmark();
+            } else if dismiss {
+                self.removed_bookmark = None;
+            }
+        }
         ui.add_space(6.0);
         let mut open = None;
         let mut remove = None;
         let mut swap = None;
+        let mut start_edit = None;
+        let mut menu = None;
+        let mut finish_edit: Option<bool> = None;
         let n = self.profile.bookmarks.len();
+        let needle = self.bookmark_filter.trim().to_lowercase();
+        let searching = !needle.is_empty();
+        let mut shown = 0;
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             for (i, b) in self.profile.bookmarks.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        if icon_button(ui, Icon::Up, 16.0, i > 0, "Move up").clicked() {
-                            swap = Some((i, i - 1));
+                if searching && !b.title.to_lowercase().contains(&needle) && !b.url.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                shown += 1;
+                if let Some((orig, title, url)) = self.bookmark_edit.as_mut().filter(|(u, ..)| *u == b.url) {
+                    let _ = orig;
+                    Frame::new().fill(ui.visuals().extreme_bg_color).corner_radius(8.0).inner_margin(Margin::same(8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Name").size(11.0).weak());
+                        let t = ui.add(egui::TextEdit::singleline(title).desired_width(f32::INFINITY));
+                        ui.label(RichText::new("Address").size(11.0).weak());
+                        let u = ui.add(egui::TextEdit::singleline(url).desired_width(f32::INFINITY));
+                        if (t.lost_focus() || u.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            finish_edit = Some(true);
                         }
-                        if icon_button(ui, Icon::Down, 16.0, i + 1 < n, "Move down").clicked() {
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() {
+                                finish_edit = Some(true);
+                            }
+                            if ui.button("Cancel").clicked() {
+                                finish_edit = Some(false);
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if icon_button(ui, Icon::Trash, 22.0, true, "Remove bookmark").clicked() {
+                                    remove = Some(b.url.clone());
+                                }
+                            });
+                        });
+                    });
+                    ui.add_space(2.0);
+                    continue;
+                }
+                let resp = Self::link_row(ui, ("b", i), &b.title, &b.url, |ui, hovered| {
+                    if icon_button(ui, Icon::Trash, 22.0, true, "Remove bookmark").clicked() {
+                        remove = Some(b.url.clone());
+                    }
+                    if icon_button(ui, Icon::Edit, 22.0, true, "Edit name or address").clicked() {
+                        start_edit = Some(b.url.clone());
+                    }
+                    if hovered && !searching {
+                        if icon_button(ui, Icon::Down, 22.0, i + 1 < n, "Move down").clicked() {
                             swap = Some((i, i + 1));
                         }
-                    });
-                    let (click, middle, x) = Self::link_row(ui, ("b", i), &b.title, &b.url);
-                    if click {
-                        open = Some((b.url.clone(), false));
-                    }
-                    if middle {
-                        open = Some((b.url.clone(), true));
-                    }
-                    if x {
-                        remove = Some(i);
+                        if icon_button(ui, Icon::Up, 22.0, i > 0, "Move up").clicked() {
+                            swap = Some((i, i - 1));
+                        }
                     }
                 });
+                if resp.clicked() {
+                    open = Some((b.url.clone(), false));
+                }
+                if resp.middle_clicked() {
+                    open = Some((b.url.clone(), true));
+                }
+                if resp.secondary_clicked() {
+                    menu = Some((LinkMenu::Bookmark(b.url.clone()), resp.interact_pointer_pos().unwrap_or(resp.rect.center())));
+                }
             }
             if n == 0 {
-                ui.label(RichText::new("No bookmarks yet. Press Ctrl+D on any page.").weak());
+                let ctrl = if cfg!(target_os = "macos") { "⌘D" } else { "Ctrl+D" };
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("No bookmarks yet").strong());
+                    ui.label(RichText::new(format!("Press {ctrl} or click the star in the address bar to bookmark a page, or import them from another browser.")).weak());
+                });
+            } else if shown == 0 {
+                ui.label(RichText::new("No bookmarks match.").weak());
             }
         });
-        if let Some(i) = remove {
-            self.profile.bookmarks.remove(i);
+        if let Some(save) = finish_edit {
+            if let Some((orig, title, url)) = self.bookmark_edit.take() {
+                if save {
+                    self.save_bookmark_edit(&orig, title, url);
+                }
+            }
+        }
+        if let Some(url) = start_edit {
+            self.edit_bookmark(&url);
+        }
+        if let Some(url) = remove {
+            self.remove_bookmark(&url);
         }
         if let Some((a, b)) = swap {
             self.profile.bookmarks.swap(a, b);
-        }
-        if remove.is_some() || swap.is_some() {
             self.profile.mark_dirty();
+        }
+        if menu.is_some() {
+            self.link_menu = menu;
         }
         self.open_from_panel(open);
     }

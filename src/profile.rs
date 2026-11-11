@@ -148,7 +148,9 @@ pub struct Settings {
     /// Light/dark mode for the Ferrum theme (other themes have their own).
     pub theme: ThemeChoice,
     /// Tell websites to use their dark style when the interface is dark.
-    pub dark_websites: bool,
+    /// Darken light-only sites in dark mode. (Saved under a new name: an
+    /// older setting called `dark_websites` did something else.)
+    pub force_dark_websites: bool,
     pub accent: [u8; 3],
     /// Size of the whole interface (not the page), 0.8–1.5.
     pub ui_scale: f32,
@@ -225,7 +227,7 @@ impl Default for Settings {
             user_agent: String::new(),
             theme_preset: ThemePreset::default(),
             theme: ThemeChoice::default(),
-            dark_websites: false,
+            force_dark_websites: false,
             accent: DEFAULT_ACCENT,
             ui_scale: 1.0,
             compact: false,
@@ -468,10 +470,54 @@ impl Profile {
         added
     }
 
+    /// Merge history from another browser: known pages keep the higher visit
+    /// count and the later visit; the newest pages are kept.
+    pub fn import_history(&mut self, items: Vec<HistoryEntry>) -> usize {
+        if self.is_private() {
+            return 0;
+        }
+        let mut index: std::collections::HashMap<String, usize> =
+            self.history.iter().enumerate().map(|(i, h)| (h.url.clone(), i)).collect();
+        let mut added = 0;
+        for h in items {
+            match index.get(&h.url) {
+                Some(&i) => {
+                    let e = &mut self.history[i];
+                    e.visits = e.visits.max(h.visits);
+                    e.last_visit = e.last_visit.max(h.last_visit);
+                    if e.title.is_empty() {
+                        e.title = h.title;
+                    }
+                },
+                None => {
+                    index.insert(h.url.clone(), self.history.len());
+                    self.history.push(h);
+                    added += 1;
+                },
+            }
+        }
+        // History is kept oldest first.
+        self.history.sort_by_key(|h| h.last_visit);
+        if self.history.len() > MAX_HISTORY {
+            let excess = self.history.len() - MAX_HISTORY;
+            self.history.drain(..excess);
+        }
+        self.mark_dirty();
+        added
+    }
+
     // ----- bookmarks -----
 
     pub fn is_bookmarked(&self, url: &str) -> bool {
         self.bookmarks.iter().any(|b| b.url == url)
+    }
+
+    /// Remove a bookmark. Returns where it was and what it was, for undo.
+    pub fn remove_bookmark(&mut self, url: &str) -> Option<(usize, Bookmark)> {
+        let i = self.bookmarks.iter().position(|b| b.url == url)?;
+        let b = self.bookmarks.remove(i);
+        self.mark_dirty();
+        Some((i, b))
     }
 
     pub fn toggle_bookmark(&mut self, url: &str, title: &str) {

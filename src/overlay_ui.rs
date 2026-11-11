@@ -11,7 +11,7 @@ use std::time::Duration;
 use egui::{Align, Color32, Id, Key as EKey, Layout, RichText, Ui, pos2, vec2};
 use url::Url;
 
-use crate::browser::{Browser, InternalPage, SidePanel};
+use crate::browser::{Browser, InternalPage, LinkMenu, SidePanel};
 use crate::icons::{Icon, icon, icon_button};
 use crate::overlay::OverlayKind;
 use crate::profile::SearchEngine;
@@ -81,6 +81,11 @@ impl Browser {
             requests.push((OverlayKind::TabMenu, fit(egui::Rect::from_min_size(at, vec2(250.0, 280.0)))));
         }
 
+        // A bookmark's or start-page tile's right-click menu.
+        if let Some((_, at)) = &self.link_menu {
+            requests.push((OverlayKind::LinkMenu, fit(egui::Rect::from_min_size(*at, vec2(230.0, 200.0)))));
+        }
+
         // "Allow notifications?" for the active tab's site.
         let active_id = self.active_tab().id;
         if self.permission_asks.first().is_some_and(|(tab, _)| *tab == active_id) && content.is_positive() {
@@ -134,6 +139,7 @@ impl Browser {
                     self.tab_action(index, action);
                 }
             },
+            OverlayKind::LinkMenu => self.link_menu_contents(ui),
             OverlayKind::Toast => {
                 if let Some((text, _)) = &self.toast {
                     ui.vertical_centered(|ui| {
@@ -145,6 +151,52 @@ impl Browser {
             OverlayKind::Notification => self.notification_contents(ui),
             OverlayKind::SearchBlocked => self.search_blocked_contents(ui),
             OverlayKind::Permission => self.permission_contents(ui),
+        }
+    }
+
+    fn link_menu_contents(&mut self, ui: &mut Ui) {
+        let Some((target, _)) = self.link_menu.clone() else { return };
+        let url = match &target {
+            LinkMenu::Bookmark(u) | LinkMenu::Frequent(u) => u.clone(),
+        };
+        let mut chosen = None;
+        let mut item = |ui: &mut Ui, label: &str, id: u8| {
+            if ui.add(egui::Button::new(label).frame(false).min_size(vec2(ui.available_width(), 24.0))).clicked() {
+                chosen = Some(id);
+            }
+        };
+        item(ui, "Open", 0);
+        item(ui, "Open in new tab", 1);
+        match &target {
+            LinkMenu::Bookmark(_) => item(ui, "Edit…", 2),
+            LinkMenu::Frequent(_) => item(ui, "Bookmark", 3),
+        }
+        item(ui, "Copy address", 4);
+        ui.separator();
+        match &target {
+            LinkMenu::Bookmark(_) => item(ui, "Remove bookmark", 5),
+            LinkMenu::Frequent(_) => item(ui, "Remove from history", 5),
+        }
+        let Some(id) = chosen else { return };
+        self.link_menu = None;
+        match id {
+            0 => self.navigate_input(&url),
+            1 => {
+                if let Ok(u) = Url::parse(&url) {
+                    self.open_tab(Some(u));
+                }
+            },
+            2 => self.edit_bookmark(&url),
+            3 => {
+                let title = self.profile.history.iter().find(|h| h.url == url).map(|h| h.title.clone()).unwrap_or_default();
+                self.profile.toggle_bookmark(&url, &title);
+                self.toast("Bookmarked");
+            },
+            4 => {
+                ui.ctx().copy_text(url);
+                self.toast("Address copied");
+            },
+            _ => self.remove_link(&target),
         }
     }
 
