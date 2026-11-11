@@ -192,14 +192,19 @@ pub struct Settings {
     pub start_title: String,
     pub start_background: StartBackground,
     pub start_color: [u8; 3],
-    /// The gradient background: its colour (`None` = the accent colour), the
-    /// colour it fades into (`None` = a dark shade of it), how strong it is at
-    /// its source (0–1), how far it spreads, and where the source is (0–1 across, 0–1 down).
-    pub gradient_color: Option<[u8; 3]>,
+    /// The gradient background: glows of colour (`gradient_sources`) over the
+    /// colour they fade into (`None` = a deep shade of the first one).
     pub gradient_base: Option<[u8; 3]>,
-    pub gradient_intensity: f32,
-    pub gradient_spread: f32,
-    pub gradient_source: [f32; 2],
+    pub gradient_sources: Vec<GradientSource>,
+    // The single source of v0.7.11, read once into `gradient_sources`.
+    #[serde(skip_serializing)]
+    pub gradient_color: Option<[u8; 3]>,
+    #[serde(skip_serializing)]
+    pub gradient_intensity: Option<f32>,
+    #[serde(skip_serializing)]
+    pub gradient_spread: Option<f32>,
+    #[serde(skip_serializing)]
+    pub gradient_source: Option<[f32; 2]>,
     pub start_image: String,
     pub start_show_clock: bool,
     pub start_show_bookmarks: bool,
@@ -229,6 +234,26 @@ pub struct Settings {
     pub custom_title_bar: bool,
     /// The user picked the search engine themselves (so Ferrum never changes it).
     pub search_engine_chosen: bool,
+}
+
+/// One glow of colour in the start page gradient.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GradientSource {
+    /// `None` = the accent colour.
+    pub color: Option<[u8; 3]>,
+    /// How strong it is at its centre, 0–1.
+    pub intensity: f32,
+    /// How far it reaches.
+    pub spread: f32,
+    /// Where its centre is: 0–1 across, 0–1 down.
+    pub pos: [f32; 2],
+}
+
+impl Default for GradientSource {
+    fn default() -> Self {
+        GradientSource { color: None, intensity: 1.0, spread: 1.2, pos: [0.5, 0.0] }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -318,11 +343,12 @@ impl Default for Settings {
             start_title: "Ferrum".into(),
             start_background: StartBackground::default(),
             start_color: [40, 44, 58],
-            gradient_color: None,
             gradient_base: None,
-            gradient_intensity: 1.0,
-            gradient_spread: 1.2,
-            gradient_source: [0.5, 0.0],
+            gradient_sources: vec![GradientSource::default()],
+            gradient_color: None,
+            gradient_intensity: None,
+            gradient_spread: None,
+            gradient_source: None,
             start_image: String::new(),
             start_show_clock: false,
             start_show_bookmarks: true,
@@ -451,6 +477,17 @@ impl Profile {
                         profile.settings.roundness = 12;
                     }
                     profile.settings.look_version = 1;
+                }
+                // v0.7.11 had one gradient source in separate fields.
+                let s = &mut profile.settings;
+                if let Some(pos) = s.gradient_source.take() {
+                    let d = GradientSource::default();
+                    s.gradient_sources = vec![GradientSource {
+                        color: s.gradient_color.take(),
+                        intensity: s.gradient_intensity.take().unwrap_or(d.intensity),
+                        spread: s.gradient_spread.take().unwrap_or(d.spread),
+                        pos,
+                    }];
                 }
                 // Themes used to set light/dark themselves: keep the look people had.
                 if profile.settings.look_version < 2 {

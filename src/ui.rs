@@ -175,28 +175,30 @@ fn clamp_to_group(tabs: &[crate::browser::Tab], from: usize, target: usize) -> u
     if tabs[from].pinned { target.min(pinned.saturating_sub(1)) } else { target.max(pinned) }
 }
 
-/// The start page's gradient background: a glow of `color` from `source`
-/// fading into `base`.
-#[derive(Clone, Copy)]
+/// The start page's gradient background: glows of colour, each from its own
+/// point, over a base colour they fade into.
+#[derive(Clone)]
 pub(crate) struct Gradient {
-    pub color: Color32,
     pub base: Color32,
-    pub intensity: f32,
-    pub spread: f32,
-    /// 0–1 across and down the area.
-    pub source: egui::Vec2,
+    /// (colour, intensity 0–1, spread, centre 0–1 across and down)
+    pub sources: Vec<(Color32, f32, f32, egui::Vec2)>,
 }
 
 impl Gradient {
+    pub const MAX_SOURCES: usize = 6;
+
     pub fn from_settings(s: &Settings, accent: Color32) -> Self {
-        let color = s.gradient_color.map_or(accent, |[r, g, b]| Color32::from_rgb(r, g, b));
-        Gradient {
-            color,
-            base: s.gradient_base.map_or_else(|| Self::auto_base(color), |[r, g, b]| Color32::from_rgb(r, g, b)),
-            intensity: s.gradient_intensity.clamp(0.0, 1.0),
-            spread: s.gradient_spread.clamp(0.2, 3.0),
-            source: vec2(s.gradient_source[0].clamp(0.0, 1.0), s.gradient_source[1].clamp(0.0, 1.0)),
-        }
+        let sources: Vec<_> = s
+            .gradient_sources
+            .iter()
+            .take(Self::MAX_SOURCES)
+            .map(|g| {
+                let color = g.color.map_or(accent, |[r, gg, b]| Color32::from_rgb(r, gg, b));
+                (color, g.intensity.clamp(0.0, 1.0), g.spread.clamp(0.2, 3.0), vec2(g.pos[0].clamp(0.0, 1.0), g.pos[1].clamp(0.0, 1.0)))
+            })
+            .collect();
+        let first = sources.first().map_or(accent, |s| s.0);
+        Gradient { base: s.gradient_base.map_or_else(|| Self::auto_base(first), |[r, g, b]| Color32::from_rgb(r, g, b)), sources }
     }
 
     /// A deep shade of the colour to fade into.
@@ -205,12 +207,16 @@ impl Gradient {
     }
 
     /// The colour at a point (0–1 across and down), for an area of the given aspect ratio.
+    /// Each glow is laid over the ones before it.
     fn at(&self, p: egui::Vec2, aspect: f32) -> Color32 {
-        let d = vec2((p.x - self.source.x) * aspect, p.y - self.source.y).length() / self.spread;
-        // Smooth falloff from the source.
-        let t = (1.0 - d).clamp(0.0, 1.0);
-        let t = t * t * (3.0 - 2.0 * t);
-        crate::theme::mix(self.base, self.color, t * self.intensity)
+        let mut c = self.base;
+        for &(color, intensity, spread, source) in &self.sources {
+            let d = vec2((p.x - source.x) * aspect, p.y - source.y).length() / spread;
+            let t = (1.0 - d).clamp(0.0, 1.0);
+            let t = t * t * (3.0 - 2.0 * t);
+            c = crate::theme::mix(c, color, t * intensity);
+        }
+        c
     }
 
     /// Whether text on it should be light.
@@ -221,8 +227,8 @@ impl Gradient {
 
     pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect) {
         // A grid of coloured vertices: smooth enough at any size, and cheap.
-        const COLS: u32 = 32;
-        const ROWS: u32 = 20;
+        const COLS: u32 = 40;
+        const ROWS: u32 = 26;
         let aspect = rect.width() / rect.height().max(1.0);
         let mut mesh = egui::Mesh::default();
         for j in 0..=ROWS {

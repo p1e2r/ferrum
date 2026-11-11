@@ -281,6 +281,8 @@ pub struct Browser {
     pub(crate) import_sources: Option<Vec<crate::browser_import::Source>>,
     pub(crate) import_choice: (bool, bool),
     pub(crate) bookmark_filter: String,
+    /// Which start-page gradient colour the settings are editing.
+    pub(crate) gradient_selected: usize,
     /// A web notification: (site, title, body, since).
     pub(crate) notification: Option<(String, String, String, Instant)>,
     /// Sites waiting for an answer to "show notifications?".
@@ -426,6 +428,7 @@ impl Browser {
             import_sources: None,
             import_choice: (true, true),
             bookmark_filter: String::new(),
+            gradient_selected: 0,
             notification: None,
             permission_asks: Vec::new(),
             remember_permission: true,

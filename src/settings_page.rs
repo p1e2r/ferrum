@@ -193,7 +193,7 @@ const ITEMS: &[Item] = &[
     item(S::Tabs, T::DownloadsButton, "Downloads button", "Always shown while something is downloading.", "toolbar", false),
     item(S::StartPage, T::StartTitle, "Title", "The big heading on the start page.", "name heading logo", false),
     item(S::StartPage, T::StartBackground, "Background", "", "wallpaper gradient colour image photo", false),
-    item(S::StartPage, T::Gradient, "Gradient", "Drag the dot to move where the colour comes from.", "gradient glow colour color intensity position spread fade", true),
+    item(S::StartPage, T::Gradient, "Gradient", "Add up to six colours. Drag a dot to move where that colour comes from.", "gradient glow colour color intensity position spread fade", true),
     item(S::StartPage, T::StartColor, "Background colour", "", "wallpaper", false),
     item(S::StartPage, T::StartImage, "Background image", "PNG, JPEG, WebP, GIF or BMP. Large photos are scaled down.", "wallpaper photo picture", false),
     item(S::StartPage, T::StartSearch, "Search box", "", "search field", false),
@@ -534,73 +534,141 @@ impl Browser {
                     });
             },
             Setting::Gradient => {
+                if s.gradient_sources.is_empty() {
+                    s.gradient_sources.push(Default::default());
+                }
                 let g = crate::ui::Gradient::from_settings(s, accent);
+                let n = s.gradient_sources.len();
+                let mut sel = self.gradient_selected.min(n - 1);
                 ui.horizontal(|ui| {
-                    // A live preview; click or drag to move the colour's source.
-                    let (rect, resp) = ui.allocate_exact_size(vec2(220.0, 136.0), Sense::click_and_drag());
-                    let painter = ui.painter().with_clip_rect(rect);
-                    g.paint(&painter, rect);
+                    // A live preview: drag a dot to move that colour; click elsewhere to move the selected one.
+                    let (rect, resp) = ui.allocate_exact_size(vec2(240.0, 150.0), Sense::click_and_drag());
+                    g.paint(&ui.painter().with_clip_rect(rect), rect);
                     ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color), StrokeKind::Inside);
+                    let at = |pos: [f32; 2]| rect.min + vec2(pos[0], pos[1]) * rect.size();
+                    let spots: Vec<egui::Pos2> = s.gradient_sources.iter().map(|g| at(g.pos)).collect();
+                    let dot = |i: usize| spots[i];
+                    if resp.drag_started() || resp.clicked() {
+                        if let Some(p) = resp.interact_pointer_pos() {
+                            if let Some(i) = (0..n).filter(|&i| dot(i).distance(p) < 14.0).min_by(|&a, &b| dot(a).distance(p).total_cmp(&dot(b).distance(p))) {
+                                sel = i;
+                            }
+                        }
+                    }
                     if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
                         let v = (p - rect.min) / rect.size();
-                        s.gradient_source = [v.x.clamp(0.0, 1.0), v.y.clamp(0.0, 1.0)];
+                        s.gradient_sources[sel].pos = [v.x.clamp(0.0, 1.0), v.y.clamp(0.0, 1.0)];
                     }
-                    let dot = rect.min + vec2(s.gradient_source[0], s.gradient_source[1]) * rect.size();
-                    ui.painter().circle_filled(dot, 7.0, Color32::WHITE);
-                    ui.painter().circle_stroke(dot, 7.0, Stroke::new(2.0_f32, Color32::from_black_alpha(140)));
+                    for i in 0..n {
+                        let c = g.sources[i].0;
+                        let r = if i == sel { 8.0 } else { 6.0 };
+                        let d = at(s.gradient_sources[i].pos);
+                        ui.painter().circle_filled(d, r, c);
+                        ui.painter().circle_stroke(d, r, Stroke::new(if i == sel { 3.0_f32 } else { 2.0 }, Color32::WHITE));
+                    }
                     resp.on_hover_cursor(egui::CursorIcon::Crosshair);
 
                     ui.add_space(12.0);
                     ui.vertical(|ui| {
-                        egui::Grid::new("gradient_grid").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-                            ui.label("Colour");
-                            ui.horizontal(|ui| {
-                                let mut c = g.color;
-                                if ui.color_edit_button_srgba(&mut c).changed() {
-                                    s.gradient_color = Some([c.r(), c.g(), c.b()]);
+                        // Pick a colour to change; add or remove colours.
+                        ui.horizontal(|ui| {
+                            let mut remove = None;
+                            for i in 0..n {
+                                let c = g.sources[i].0;
+                                let (r, chip) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                                ui.painter().circle_filled(r.center(), 10.0, c);
+                                if i == sel {
+                                    ui.painter().circle_stroke(r.center(), 12.0, Stroke::new(2.0_f32, ui.visuals().strong_text_color()));
                                 }
-                                if s.gradient_color.is_some() {
+                                let chip = chip.on_hover_text(format!("Colour {} — right-click to remove", i + 1));
+                                if chip.clicked() {
+                                    sel = i;
+                                }
+                                if chip.secondary_clicked() && n > 1 {
+                                    remove = Some(i);
+                                }
+                            }
+                            if n < crate::ui::Gradient::MAX_SOURCES && ui.small_button("+ Add colour").clicked() {
+                                // Somewhere new, in a colour that differs from the last one.
+                                let spots = [[1.0, 1.0], [0.0, 1.0], [1.0, 0.0], [0.0, 0.0], [0.5, 0.5], [0.5, 1.0]];
+                                let last = g.sources.last().map_or(accent, |s| s.0);
+                                let hsva = egui::ecolor::Hsva::from(last);
+                                let next: Color32 = egui::ecolor::Hsva::new((hsva.h + 0.33).fract(), hsva.s.max(0.5), hsva.v.max(0.6), 1.0).into();
+                                s.gradient_sources.push(crate::profile::GradientSource {
+                                    color: Some([next.r(), next.g(), next.b()]),
+                                    intensity: 0.8,
+                                    spread: 1.0,
+                                    pos: spots[n % spots.len()],
+                                });
+                                sel = n;
+                            }
+                            if let Some(i) = remove {
+                                s.gradient_sources.remove(i);
+                                sel = sel.min(s.gradient_sources.len() - 1);
+                            }
+                        });
+                        ui.add_space(4.0);
+                        let mut remove_selected = false;
+                        let src = &mut s.gradient_sources[sel];
+                        egui::Grid::new("gradient_grid").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                            ui.label(format!("Colour {}", sel + 1));
+                            ui.horizontal(|ui| {
+                                let mut c = src.color.map_or(accent, |[r, g, b]| Color32::from_rgb(r, g, b));
+                                if ui.color_edit_button_srgba(&mut c).changed() {
+                                    src.color = Some([c.r(), c.g(), c.b()]);
+                                }
+                                if src.color.is_some() {
                                     if ui.small_button("Use accent").clicked() {
-                                        s.gradient_color = None;
+                                        src.color = None;
                                     }
                                 } else {
                                     ui.label(RichText::new("Accent colour").weak());
                                 }
                             });
                             ui.end_row();
-                            ui.label("Fades into");
-                            ui.horizontal(|ui| {
-                                let mut c = g.base;
-                                if ui.color_edit_button_srgba(&mut c).changed() {
-                                    s.gradient_base = Some([c.r(), c.g(), c.b()]);
-                                }
-                                if s.gradient_base.is_some() {
-                                    if ui.small_button("Automatic").clicked() {
-                                        s.gradient_base = None;
-                                    }
-                                } else {
-                                    ui.label(RichText::new("Automatic").weak());
-                                }
-                            });
-                            ui.end_row();
                             ui.label("Intensity");
-                            ui.add(egui::Slider::new(&mut s.gradient_intensity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                            ui.add(egui::Slider::new(&mut src.intensity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
                             ui.end_row();
                             ui.label("Spread");
-                            ui.add(egui::Slider::new(&mut s.gradient_spread, 0.2..=3.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
+                            ui.add(egui::Slider::new(&mut src.spread, 0.2..=3.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
                             ui.end_row();
-                            ui.label("Source");
+                            ui.label("Position");
                             ui.horizontal(|ui| {
-                                for (label, pos) in [("Top", [0.5, 0.0]), ("Centre", [0.5, 0.5]), ("Bottom", [0.5, 1.0]), ("Top left", [0.0, 0.0]), ("Top right", [1.0, 0.0])] {
+                                for (label, pos) in [("Top", [0.5, 0.0]), ("Centre", [0.5, 0.5]), ("Bottom", [0.5, 1.0]), ("Left", [0.0, 0.5]), ("Right", [1.0, 0.5])] {
                                     if ui.small_button(label).clicked() {
-                                        s.gradient_source = pos;
+                                        src.pos = pos;
                                     }
                                 }
                             });
                             ui.end_row();
+                            if n > 1 {
+                                ui.label("");
+                                remove_selected = ui.small_button(format!("Remove colour {}", sel + 1)).clicked();
+                                ui.end_row();
+                            }
+                        });
+                        if remove_selected {
+                            s.gradient_sources.remove(sel);
+                            sel = sel.min(s.gradient_sources.len() - 1);
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Fades into");
+                            let mut c = g.base;
+                            if ui.color_edit_button_srgba(&mut c).changed() {
+                                s.gradient_base = Some([c.r(), c.g(), c.b()]);
+                            }
+                            if s.gradient_base.is_some() {
+                                if ui.small_button("Automatic").clicked() {
+                                    s.gradient_base = None;
+                                }
+                            } else {
+                                ui.label(RichText::new("Automatic").weak());
+                            }
                         });
                     });
                 });
+                self.gradient_selected = sel;
             },
             Setting::StartColor => {
                 let mut c = Color32::from_rgb(s.start_color[0], s.start_color[1], s.start_color[2]);
