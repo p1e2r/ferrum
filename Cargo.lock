@@ -2352,6 +2352,7 @@ dependencies = [
  "egui_glow",
  "euclid",
  "glow",
+ "iana-time-zone",
  "image",
  "keyboard-types",
  "log",
@@ -7788,8 +7789,6 @@ dependencies = [
 [[package]]
 name = "servo-script"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6c3e52be4165b3f98b992f384156b049d30b769004a96cf52903ea27cd32f9b"
 dependencies = [
  "accesskit",
  "app_units",

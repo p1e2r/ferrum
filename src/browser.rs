@@ -90,6 +90,8 @@ struct Delegate {
     rendering_context: Rc<OffscreenRenderingContext>,
     events: RefCell<Vec<Event>>,
     blocker: Rc<Blocker>,
+    /// Scripts added to every page (compatibility fixes).
+    user_content: Rc<servo::UserContentManager>,
 }
 
 impl Delegate {
@@ -151,6 +153,7 @@ impl WebViewDelegate for Delegate {
             .builder(self.rendering_context.clone())
             .hidpi_scale_factor(Scale::new(self.window.scale_factor() as f32))
             .delegate(parent.delegate())
+            .user_content_manager(self.user_content.clone())
             .build();
         self.push(Event::Opened(webview));
     }
@@ -386,6 +389,8 @@ pub struct Tab {
     /// For a page-source tab.
     pub source: Option<Source>,
     pub last_used: Instant,
+    /// The search this tab is loading (engine, query), to notice a network blocking it.
+    pub search: Option<(crate::profile::SearchEngine, String)>,
 }
 
 impl Tab {
@@ -407,6 +412,7 @@ impl Tab {
             reader: None,
             source: None,
             last_used: Instant::now(),
+            search: None,
         }
     }
 
@@ -528,6 +534,9 @@ pub struct Browser {
     pub(crate) custom_title_bar_at_start: bool,
     on_edge: Option<winit::window::ResizeDirection>,
     pub(crate) quit_requested: bool,
+    search_check: Rc<RefCell<Option<(WebViewId, crate::profile::SearchEngine, String)>>>,
+    /// A search engine the network blocked: (tab, engine, query).
+    pub(crate) search_blocked: Option<(WebViewId, crate::profile::SearchEngine, String)>,
     console_results: Rc<RefCell<Vec<(WebViewId, Level, String)>>>,
 
     // Page geometry (egui points) and input
@@ -545,7 +554,8 @@ impl Browser {
         initial_url: Option<String>,
         private: bool,
     ) -> Self {
-        let profile = Profile::load(if private { None } else { Profile::default_dir() });
+        let mut profile = Profile::load(if private { None } else { Profile::default_dir() });
+        profile.settings.fit_search_engine_to_region();
         crate::timing("profile loaded");
 
         let title = if private { format!("{APP_NAME} (Private)") } else { APP_NAME.to_string() };
@@ -650,6 +660,11 @@ impl Browser {
             rendering_context: page_context.clone(),
             events: Default::default(),
             blocker: blocker.clone(),
+            user_content: {
+                let manager = servo::UserContentManager::new(&servo);
+                manager.add_script(Rc::new(servo::UserScript::new(crate::compat::SCRIPT.to_string(), None)));
+                Rc::new(manager)
+            },
         });
         servo.set_delegate(Rc::new(EngineDelegate { blocker: blocker.clone(), tabs: delegate.clone() }));
 
@@ -710,6 +725,8 @@ impl Browser {
             custom_title_bar_at_start: custom_title_bar,
             on_edge: None,
             quit_requested: false,
+            search_check: Rc::default(),
+            search_blocked: None,
             console_results: Rc::default(),
             content_rect: egui::Rect::NOTHING,
             ppp: 1.0,
@@ -750,6 +767,7 @@ impl Browser {
             .url(url)
             .hidpi_scale_factor(Scale::new(self.window.scale_factor() as f32))
             .delegate(self.delegate.clone())
+            .user_content_manager(self.delegate.user_content.clone())
             .build();
         if let Some(theme) = self.page_theme {
             webview.notify_theme_change(theme);
@@ -910,10 +928,43 @@ impl Browser {
 
     pub(crate) fn navigate_input(&mut self, input: &str) {
         if let Some(url) = input_to_url(input, &self.profile.settings) {
-            let upgraded = url.scheme() == "https" && !input.trim().to_ascii_lowercase().starts_with("https://");
+            let is_search = url == self.profile.settings.search_url(input.trim());
+            let upgraded = !is_search && url.scheme() == "https" && !input.trim().to_ascii_lowercase().starts_with("https://");
             self.navigate(url);
             self.tabs[self.active].upgraded_to_https = upgraded;
+            self.tabs[self.active].search = is_search.then(|| (self.profile.settings.search_engine, input.trim().to_string()));
         }
+    }
+
+    /// After a search page loads, check whether the network replaced it with a
+    /// block page (Indonesia blocks DuckDuckGo, for example) and offer another engine.
+    fn check_search_blocked(&mut self, webview: &WebView) {
+        let Some(i) = self.tab_index(webview.id()) else { return };
+        let Some(search) = self.tabs[i].search.take() else { return };
+        let slot = self.search_check.clone();
+        let proxy = self.proxy.clone();
+        let id = webview.id();
+        webview.evaluate_javascript(
+            "(document.title + ' ' + location.host + ' ' + (document.body ? document.body.innerText.slice(0, 3000) : '')).toLowerCase()",
+            move |value| {
+                if let Ok(servo::JSValue::String(text)) = value {
+                    if looks_like_block_page(&text) {
+                        *slot.borrow_mut() = Some((id, search.0, search.1));
+                        let _ = proxy.send_event(WakeUp);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Switch to another search engine and repeat the blocked search.
+    pub(crate) fn search_with(&mut self, engine: crate::profile::SearchEngine, query: &str) {
+        self.profile.settings.search_engine = engine;
+        self.profile.settings.search_engine_chosen = true;
+        self.profile.mark_dirty();
+        self.search_blocked = None;
+        self.navigate_input(query);
+        self.toast(format!("Searching with {} from now on", engine.name()));
     }
 
     pub(crate) fn navigate(&mut self, url: Url) {
@@ -1167,6 +1218,7 @@ impl Browser {
                         let title = webview.page_title();
                         self.profile.record_visit(&url, title.as_deref());
                     }
+                    self.check_search_blocked(&webview);
                     if self.tab_index(webview.id()).is_some_and(|i| self.tabs[i].muted) {
                         webview.evaluate_javascript(mute_script(true), |_| {});
                     }
@@ -1214,6 +1266,10 @@ impl Browser {
             if let Some(i) = self.tab_index(id) {
                 self.tabs[i].console.push(level, text);
             }
+        }
+        if let Some(blocked) = self.search_check.borrow_mut().take() {
+            self.search_blocked = Some(blocked);
+            self.window.request_redraw();
         }
         self.finish_async_work();
         self.sleep_idle_tabs();
@@ -2099,6 +2155,15 @@ pub(crate) fn engine_prefs(settings: &crate::profile::Settings, default_user_age
     ]
 }
 
+/// Words found on the pages networks show instead of a blocked site.
+pub(crate) fn looks_like_block_page(text: &str) -> bool {
+    const SIGNS: [&str; 10] = [
+        "internet positif", "internetpositif", "trustpositif", "internet baik", "diblokir",
+        "komdigi", "kominfo", "situs ini tidak dapat diakses", "blocked by the government", "content blocked",
+    ];
+    SIGNS.iter().any(|s| text.contains(s))
+}
+
 /// The name a permission is remembered under in settings.
 pub(crate) fn feature_key(feature: servo::PermissionFeature) -> &'static str {
     use servo::PermissionFeature as F;
@@ -2149,5 +2214,15 @@ fn run_file_picker(mut picker: FilePicker) {
     } else {
         picker.select(&paths);
         picker.submit();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn spots_block_pages() {
+        assert!(super::looks_like_block_page("internet positif - situs ini diblokir"));
+        assert!(super::looks_like_block_page("trustpositif.komdigi.go.id"));
+        assert!(!super::looks_like_block_page("duckduckgo html results for rust"));
     }
 }

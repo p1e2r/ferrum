@@ -248,6 +248,7 @@ impl Browser {
             self.draw_menu(&ctx);
         }
         self.draw_notification(&ctx);
+        self.draw_search_blocked(&ctx);
         self.draw_toast(&ctx);
     }
 

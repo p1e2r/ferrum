@@ -98,6 +98,10 @@ After drawing, if any setting changed the profile is marked for saving and `Brow
 
 `export` / `import` of Netscape bookmark files (folders are flattened; only http/https/file links are imported). `updates::check` asks the GitHub releases API on a background thread and compares versions numerically (`parse_version`).
 
+## `compat.rs` — site fixes
+
+A user script added to every page through Servo's `UserContentManager`. It finds stylesheet rules for Chrome's and Firefox's slider pseudo-elements, renames them to Servo's `::slider-thumb` / `::slider-track` / `::slider-fill` and adds them back.
+
 ## `theme.rs` — colour themes
 
 `ThemePreset` lists the themes. `Ferrum` is the standard egui look and follows the light/dark setting; every other preset has a `Palette` (dark or light, panel, surface, text, suggested accent). `apply` paints an egui `Visuals` from a palette: panels and dialogs use `panel`, the toolbar, text fields and cards use `surface`, and widget fills are blends of panel and text (`mix`). `ui::style` resets both egui styles, applies the preset's palette to the matching one, and switches egui to that mode; `style_key` makes this run only when a look-related setting changes.

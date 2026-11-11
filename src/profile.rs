@@ -190,6 +190,8 @@ pub struct Settings {
     /// Draw Ferrum's own title bar (tabs in the title bar, Chrome-style window
     /// buttons) instead of the system one.
     pub custom_title_bar: bool,
+    /// The user picked the search engine themselves (so Ferrum never changes it).
+    pub search_engine_chosen: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,11 +253,25 @@ impl Default for Settings {
             reader_theme: ReaderTheme::Auto,
             reader_width: 720.0,
             custom_title_bar: true,
+            search_engine_chosen: false,
         }
     }
 }
 
+/// Countries whose networks block DuckDuckGo (Indonesia has since 2024), by time zone.
+pub fn duckduckgo_blocked_here() -> bool {
+    let tz = iana_time_zone::get_timezone().unwrap_or_default();
+    matches!(tz.as_str(), "Asia/Jakarta" | "Asia/Pontianak" | "Asia/Makassar" | "Asia/Jayapura")
+}
+
 impl Settings {
+    /// Pick a search engine that works on this network, unless the user chose one.
+    pub fn fit_search_engine_to_region(&mut self) {
+        if !self.search_engine_chosen && self.search_engine == SearchEngine::DuckDuckGo && duckduckgo_blocked_here() {
+            self.search_engine = SearchEngine::Google;
+        }
+    }
+
     pub fn search_url(&self, query: &str) -> Url {
         self.search_engine.search_url(query, &self.custom_search_url)
     }

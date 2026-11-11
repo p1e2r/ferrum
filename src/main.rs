@@ -14,6 +14,7 @@
 
 mod blocker;
 mod bookmarks_io;
+mod compat;
 mod browser;
 mod devtools;
 mod downloads;

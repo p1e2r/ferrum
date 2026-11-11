@@ -44,6 +44,8 @@ A fast, native desktop web browser written in Rust.
 | Bookmarks import/export | HTML bookmark files from/to Firefox, Chrome, Edge, Safari |
 | Updates | Checks GitHub once a day for a newer Ferrum (can be turned off) |
 | Pinch zoom | Trackpad pinch zooms the page |
+| Blocked search engines | In Indonesia (where DuckDuckGo is blocked) new installs search with Google; if a network replaces a search with a block page, Ferrum offers to repeat it with another engine |
+| Site fixes | Range sliders styled for Chrome/Firefox (`::-webkit-slider-thumb`, `::-moz-range-*`) are translated so they look as designed |
 | Title bar | Like Chrome: tabs sit in the title bar with Ferrum's own minimise / maximise / close buttons (close turns red on hover), drag the empty strip to move the window, double-click to maximise, resize from the window edges. Round-hover ✕ on tabs. On macOS the traffic lights stay over a transparent title bar. Can be switched back to the system title bar in settings |
 
 ### Efficiency
@@ -192,6 +194,10 @@ scripts/          build scripts for macOS, Linux and Windows
 ## Limitations
 
 Servo is still maturing, so some heavy sites (big web apps, some video players) won't render perfectly, and a few CSS features are missing. Not possible on Servo yet, so not in Ferrum: extensions, account sync, DRM-protected video (Netflix, Disney+ and similar use Widevine) and page translation. Servo only shows web notifications that have an icon, and "Leave this page?" prompts appear for navigations started by the page (links, forms, reload) but not for the address bar. Find in page and printing are implemented by Ferrum itself, because Servo has no API for them yet: find runs a small highlighting script in the page, and printing captures the page as images (so printed text isn't selectable, and pages longer than 40 screens are cut off). JavaScript runs on SpiderMonkey (C++), the engine Servo uses; everything else in Ferrum's own code is Rust.
+
+## Patched engine code
+
+`patches/servo-script` is Servo's script crate with a fix that stops the browser crashing when a tab that used WebGL 2 is closed or reloaded. See [patches/README.md](patches/README.md).
 
 ## License
 

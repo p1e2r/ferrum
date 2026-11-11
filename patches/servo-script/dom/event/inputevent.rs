@@ -1,0 +1,154 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+use bitflags::bitflags;
+use dom_struct::dom_struct;
+use embedder_traits::Cursor;
+use euclid::Point2D;
+use js::context::JSContext;
+use js::rust::HandleObject;
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::reflector::reflect_dom_object_with_proto;
+use style::Atom;
+use style_traits::CSSPixel;
+
+use crate::dom::bindings::codegen::Bindings::InputEventBinding::{self, InputEventMethods};
+use crate::dom::bindings::codegen::Bindings::UIEventBinding::UIEvent_Binding::UIEventMethods;
+use crate::dom::bindings::error::Fallible;
+use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::str::DOMString;
+use crate::dom::datatransfer::DataTransfer;
+use crate::dom::node::Node;
+use crate::dom::selection_range::RootedSelectionBoundary;
+use crate::dom::staticrange::StaticRange;
+use crate::dom::uievent::UIEvent;
+use crate::dom::window::Window;
+
+#[dom_struct]
+pub(crate) struct InputEvent {
+    uievent: UIEvent,
+    data: Option<TracedDOMString>,
+    is_composing: bool,
+    input_type: TracedDOMString,
+}
+
+impl InputEvent {
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        cx: &mut JSContext,
+        window: &Window,
+        proto: Option<HandleObject>,
+        event_type: Atom,
+        flags: InputEventFlags,
+        view: Option<&Window>,
+        detail: i32,
+        data: Option<DOMString>,
+        input_type: DOMString,
+    ) -> DomRoot<InputEvent> {
+        let event = reflect_dom_object_with_proto(
+            cx,
+            Box::new(InputEvent {
+                uievent: UIEvent::new_inherited(),
+                data: data.map(|domstring| domstring.traced()),
+                is_composing: flags.intersects(InputEventFlags::COMPOSING),
+                input_type: input_type.traced(),
+            }),
+            window,
+            proto,
+        );
+        event.uievent.init_event(
+            event_type,
+            flags.intersects(InputEventFlags::BUBBLES),
+            flags.intersects(InputEventFlags::CANCELABLE),
+            view,
+            detail,
+        );
+        event
+    }
+}
+
+impl InputEventMethods<crate::DomTypeHolder> for InputEvent {
+    /// <https://w3c.github.io/uievents/#dom-inputevent-inputevent>
+    fn Constructor(
+        cx: &mut JSContext,
+        window: &Window,
+        proto: Option<HandleObject>,
+        event_type: DOMString,
+        init: &InputEventBinding::InputEventInit,
+    ) -> Fallible<DomRoot<InputEvent>> {
+        let mut flags = InputEventFlags::empty();
+        if init.parent.parent.bubbles {
+            flags |= InputEventFlags::BUBBLES;
+        }
+        if init.parent.parent.cancelable {
+            flags |= InputEventFlags::CANCELABLE;
+        }
+        if init.isComposing {
+            flags |= InputEventFlags::COMPOSING;
+        }
+        let event = InputEvent::new(
+            cx,
+            window,
+            proto,
+            event_type.into(),
+            flags,
+            init.parent.view.as_deref(),
+            init.parent.detail,
+            init.data.clone(),
+            init.inputType.clone(),
+        );
+        Ok(event)
+    }
+
+    /// <https://w3c.github.io/uievents/#dom-inputevent-data>
+    fn GetData(&self) -> Option<DOMString> {
+        self.data.clone().map(|domstring| domstring.root())
+    }
+
+    /// <https://w3c.github.io/uievents/#dom-inputevent-iscomposing>
+    fn IsComposing(&self) -> bool {
+        self.is_composing
+    }
+
+    /// <https://w3c.github.io/uievents/#dom-inputevent-inputtype>
+    fn InputType(&self) -> DOMString {
+        self.input_type.clone().root()
+    }
+
+    /// <https://w3c.github.io/input-events/#dom-inputevent-datatransfer>
+    fn GetDataTransfer(&self) -> Option<DomRoot<DataTransfer>> {
+        // TODO: Populate dataTransfer for contenteditable
+        None
+    }
+
+    /// <https://w3c.github.io/input-events/#dom-inputevent-gettargetranges>
+    fn GetTargetRanges(&self) -> Vec<DomRoot<StaticRange>> {
+        // TODO: Populate targetRanges for contenteditable
+        Vec::new()
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-event-istrusted>
+    fn IsTrusted(&self) -> bool {
+        self.uievent.IsTrusted()
+    }
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub struct InputEventFlags: u8 {
+        const BUBBLES = 1 << 0;
+        const CANCELABLE = 1 << 1;
+        const COMPOSING = 1 << 2;
+    }
+}
+/// A [`HitTestResult`] that is the result of doing a hit test based on a less-fine-grained
+/// `PaintHitTestResult` against our current layout.
+pub(crate) struct HitTestResult {
+    pub node: DomRoot<Node>,
+    pub dom_position_for_selection: Option<RootedSelectionBoundary>,
+    pub cursor: Cursor,
+    pub point_in_node: Point2D<f32, CSSPixel>,
+    pub point_in_frame: Point2D<f32, CSSPixel>,
+    pub point_relative_to_initial_containing_block: Point2D<f32, CSSPixel>,
+}

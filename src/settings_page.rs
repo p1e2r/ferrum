@@ -502,7 +502,9 @@ impl Browser {
             Setting::SearchEngine => {
                 egui::ComboBox::from_id_salt("engine").selected_text(s.search_engine.name()).show_ui(ui, |ui| {
                     for e in SearchEngine::ALL {
-                        ui.selectable_value(&mut s.search_engine, e, e.name());
+                        if ui.selectable_value(&mut s.search_engine, e, e.name()).clicked() {
+                            s.search_engine_chosen = true;
+                        }
                     }
                 });
             },

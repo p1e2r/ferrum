@@ -1,0 +1,126 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+use std::cell::Cell;
+
+use dom_struct::dom_struct;
+use js::context::JSContext;
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::reflector::{Reflector, reflect_dom_object};
+
+use crate::dom::bindings::codegen::Bindings::VideoTrackBinding::VideoTrackMethods;
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
+use crate::dom::bindings::str::DOMString;
+use crate::dom::videotracklist::VideoTrackList;
+use crate::dom::window::Window;
+
+#[dom_struct]
+pub(crate) struct VideoTrack {
+    reflector_: Reflector,
+    id: TracedDOMString,
+    kind: TracedDOMString,
+    label: TracedDOMString,
+    language: TracedDOMString,
+    selected: Cell<bool>,
+    track_list: MutNullableDom<VideoTrackList>,
+}
+
+impl VideoTrack {
+    pub(crate) fn new_inherited(
+        id: DOMString,
+        kind: DOMString,
+        label: DOMString,
+        language: DOMString,
+        track_list: Option<&VideoTrackList>,
+    ) -> VideoTrack {
+        VideoTrack {
+            reflector_: Reflector::new(),
+            id: id.traced(),
+            kind: kind.traced(),
+            label: label.traced(),
+            language: language.traced(),
+            selected: Cell::new(false),
+            track_list: MutNullableDom::new(track_list),
+        }
+    }
+
+    pub(crate) fn new(
+        cx: &mut JSContext,
+        window: &Window,
+        id: DOMString,
+        kind: DOMString,
+        label: DOMString,
+        language: DOMString,
+        track_list: Option<&VideoTrackList>,
+    ) -> DomRoot<VideoTrack> {
+        reflect_dom_object(
+            cx,
+            Box::new(VideoTrack::new_inherited(
+                id, kind, label, language, track_list,
+            )),
+            window,
+        )
+    }
+
+    pub(crate) fn id(&self) -> DOMString {
+        self.id.clone().root()
+    }
+
+    pub(crate) fn kind(&self) -> DOMString {
+        self.kind.clone().root()
+    }
+
+    pub(crate) fn selected(&self) -> bool {
+        self.selected.get()
+    }
+
+    pub(crate) fn set_selected(&self, value: bool) {
+        self.selected.set(value);
+    }
+
+    pub(crate) fn add_track_list(&self, track_list: &VideoTrackList) {
+        self.track_list.set(Some(track_list));
+    }
+
+    pub(crate) fn remove_track_list(&self) {
+        self.track_list.set(None);
+    }
+}
+
+impl VideoTrackMethods<crate::DomTypeHolder> for VideoTrack {
+    /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-id>
+    fn Id(&self) -> DOMString {
+        self.id()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-kind>
+    fn Kind(&self) -> DOMString {
+        self.kind()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-label>
+    fn Label(&self) -> DOMString {
+        self.label.clone().root()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-language>
+    fn Language(&self) -> DOMString {
+        self.language.clone().root()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-selected>
+    fn Selected(&self) -> bool {
+        self.selected()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-selected>
+    fn SetSelected(&self, value: bool) {
+        if let Some(list) = self.track_list.get() &&
+            let Some(idx) = list.find(self)
+        {
+            list.set_selected(idx, value);
+        }
+        self.set_selected(value);
+    }
+}

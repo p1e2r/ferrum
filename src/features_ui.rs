@@ -205,6 +205,42 @@ impl Browser {
         }
     }
 
+    /// "Your network blocks this search engine" with a one-click switch.
+    pub(crate) fn draw_search_blocked(&mut self, ctx: &egui::Context) {
+        let Some((id, engine, query)) = self.search_blocked.clone() else { return };
+        if self.active_webview().map(|w| w.id()) != Some(id) {
+            return;
+        }
+        let rect = self.content_rect;
+        let mut action: Option<Option<crate::profile::SearchEngine>> = None;
+        egui::Area::new(Id::new("search_blocked"))
+            .order(egui::Order::Foreground)
+            .pivot(Align2::CENTER_TOP)
+            .fixed_pos(pos2(rect.center().x, rect.top() + 12.0))
+            .show(ctx, |ui| {
+                Frame::popup(ui.style()).inner_margin(Margin::same(12)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        icon(ui, Icon::Warning, 18.0, Color32::from_rgb(220, 140, 30));
+                        ui.label(RichText::new(format!("Your network blocks {}.", engine.name())).strong());
+                        ui.label("Search with:");
+                        for other in [crate::profile::SearchEngine::Google, crate::profile::SearchEngine::Bing, crate::profile::SearchEngine::Brave] {
+                            if other != engine && ui.button(other.name()).clicked() {
+                                action = Some(Some(other));
+                            }
+                        }
+                        if crate::icons::icon_button(ui, Icon::Close, 20.0, true, "Dismiss").clicked() {
+                            action = Some(None);
+                        }
+                    });
+                });
+            });
+        match action {
+            Some(Some(e)) => self.search_with(e, &query),
+            Some(None) => self.search_blocked = None,
+            None => {},
+        }
+    }
+
     /// A web notification, shown in the top-right corner of the page for a few seconds.
     pub(crate) fn draw_notification(&mut self, ctx: &egui::Context) {
         let Some((site, title, body, since)) = &self.notification else { return };
