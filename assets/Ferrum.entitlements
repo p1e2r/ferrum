@@ -2,13 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- SpiderMonkey (Servo's JavaScript engine) compiles JavaScript to machine
-       code at runtime. Under the hardened runtime that needs these, or the
-       engine fails to start ("JSEngine::init ... InitFailed"). -->
-  <key>com.apple.security.cs.allow-jit</key>
-  <true/>
-  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-  <true/>
   <!-- Camera and microphone for sites you allow (WebRTC). -->
   <key>com.apple.security.device.camera</key>
   <true/>

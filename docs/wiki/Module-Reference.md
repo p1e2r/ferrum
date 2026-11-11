@@ -4,11 +4,11 @@
 
 | Item | Purpose |
 |---|---|
-| `WakeUp` | User event sent from other threads to wake the main thread |
-| `Waker` | Implements Servo's `EventLoopWaker` by sending `WakeUp` |
+| `WakeUp` | User event sent from other threads (downloads, favicons, engine callbacks) to wake the main thread |
 | `parse_args()` | `ferrum [--private] [URL]`, plus `--help`, `--version` |
-| `App` | winit `ApplicationHandler`: `Starting` → `Running(Browser)` → `Done` |
-| `main()` | installs the rustls crypto provider, builds the event loop, runs `App` |
+| `App` | winit `ApplicationHandler`: `Starting` → `Running(Browser)` → `Done`. On Linux, `about_to_wait` also runs GTK's main loop, which WebKitGTK needs |
+| `install_crash_reporter()` | Writes a crash log to the profile folder on a panic |
+| `main()` | installs the rustls crypto provider; on Linux starts GTK on X11; builds the event loop, runs `App` |
 
 On Windows release builds `windows_subsystem = "windows"` hides the console window.
 
@@ -16,34 +16,41 @@ On Windows release builds `windows_subsystem = "windows"` hides the console wind
 
 | Item | Purpose |
 |---|---|
-| `PageControl`, `Pending` | A page request awaiting the user (see [Servo callbacks](Servo-Callbacks)) |
-| `Event` (private) | Work queued by the delegate for `pump` |
-| `Delegate` | Servo's `WebViewDelegate`; queues events, requests redraws |
-| `set_cursor()` | Maps Servo cursors to winit cursors |
-| `EngineDelegate` | Servo's `ServoDelegate`: blocks and shows notifications for loads not tied to a tab |
-| `Tab` | One tab: optional webview, crash state, zoom, favicon, pinned / muted / playing, console, reader article, page source, last used. `title()`, `url()`, `loading()` |
+| `Event` (private) | Work queued by wry's handlers for `pump`: `Title`, `Load`, `NewTab`, `Download`, `Ipc` (a page-script message) |
+| `Shortcut` | A key plus Ctrl/⌘/Shift/Alt, from Ferrum's window or the page script |
+| `Tab` | One tab: optional `wry::WebView`, title, URL, loading, zoom, favicon, pinned / muted / playing, blocked count, reader article, page source, page bounds. `title()`, `url()`, `loading()` |
 | `InternalPage` | Pages Ferrum draws itself: `Settings` (`ferrum://settings`), `Shortcuts` (`ferrum://shortcuts`), `Source` (view source) |
 | `SidePanel` | Which side panel is open |
+| `PermissionAsk` | A site asking to show notifications |
 | `Browser` | Owns all state (below) |
-| `run_file_picker()` | Answers `<input type=file>` with the system dialog |
 
 ### `Browser` methods
 
 | Group | Methods |
 |---|---|
-| Set-up | `new(event_loop, proxy, waker, url, private)` — window, GL contexts, Servo (with profile `Opts`), egui, profile, downloads; opens the URL, the restored session, or the home page |
-| Tabs | `create_webview`, `open_tab`, `open_home_tab`, `open_background_tab`, `activate`, `close_tab`, `reopen_closed_tab`, `active_tab`, `active_webview`, `tab_index` |
-| Navigation | `navigate_input`, `navigate`, `go_home`, `go_back`, `go_forward`, `reload` (also recovers crashed tabs), `sync_location` |
-| View | `set_zoom`, `zoom_step` (steps 30%–300%), `toggle_window_fullscreen`, `apply_theme` (UI + `prefers-color-scheme`) |
-| Features | `toggle_bookmark`, `start_download`, `clear_site_data`, `open_private_window`, `toast` |
-| Modern features | `toggle_reader`, `view_source`, `take_screenshot`, `toggle_devtools`, `run_in_console`, `toggle_mute`, `toggle_pin`, `move_tab`, `sleep_idle_tabs`, `check_for_updates`, `import_bookmarks` / `export_bookmarks`, `toggle_site_blocking`, `clear_this_site`, `open_internal` |
-| Permissions | `add_control` (answers remembered permissions), `remember_permission_answer`, free function `feature_key` |
-| Async results | `finish_async_work` picks up reader, source and screenshot results that arrive from Servo callbacks (they wake the loop with `WakeUp`) |
-| Event loop | `pump`, `handle_window_event`, `handle_shortcut`, `forward_to_page`, `redraw` |
-| Popups | `has_popup`, `dismiss_popups`, `toggle_panel` |
-| Helpers | `refresh_favicon`, `in_content`, `page_point`, `mouse_physical`, `egui_ctx` |
+| Set-up | `new` — window and GL surface (`gl.rs`), the engine's `WebContext` in the profile, egui, profile, downloads, ad-block rules; opens the URL, the restored session, or the home page |
+| Tabs | `create_webview` (wry builder with all handlers), `new_tab`, `open_tab`, `open_home_tab`, `open_background_tab`, `activate`, `close_tab`, `duplicate_tab`, `active_tab`, `active_webview` |
+| Navigation | `navigate_input`, `navigate`, `go_home`, `go_back`, `go_forward`, `can_go_back`, `reload`, `stop`, `sync_location` |
+| View | `set_zoom`, `zoom_step` (30%–300%), `toggle_window_fullscreen`, `apply_page_theme`, `layout_pages` (places the active page view) |
+| Features | `toggle_bookmark`, `start_download`, `clear_site_data`, `open_private_window`, `toast`, `print`, find (`open_find`, `find_step`, `close_find`) |
+| Modern features | `toggle_reader`, `view_source`, `toggle_devtools` (the engine's own inspector), `toggle_mute`, `toggle_pin`, `move_tab`, `check_for_updates`, `import_bookmarks` / `export_bookmarks`, `toggle_site_blocking`, `clear_this_site`, `open_internal`, `open_settings` |
+| Pages | `handle_page_message` (page-script messages), `answer_notifications`, `answer_permission_ask` |
+| Event loop | `pump`, `handle_window_event`, `handle_shortcut`, `next_wake`, `save_if_due`, `request_quit` |
+| Popups | `request_popups`, `draw_overlay` (overlay_ui.rs), `close_popups`, `toggle_panel` |
 
-`Drop for Browser` saves the session, flushes the profile, declines pending page requests and tears down egui's GL resources.
+`Drop for Browser` saves the session, flushes the profile, closes the popups and tears down egui's GL resources.
+
+## `gl.rs` — the OpenGL surface
+
+`GlWindow` creates the main window with an OpenGL context (glutin), and `create_popup` gives popup windows their own surface on the same context. `make_current(_on)`, `swap`, `resize(_surface)`.
+
+## `overlay.rs`, `overlay_ui.rs` — popups
+
+`OverlayKind` (Menu, Suggestions, SiteInfo, TabMenu, Toast, Notification, SearchBlocked, Permission) and `Overlays` (`sync`, `draw`, `handle_event`, `destroy`). `overlay_ui.rs` has `Browser::request_popups` and `draw_overlay` plus one `…_contents` function per popup. See [Pages and popups](Pages-and-Popups).
+
+## `pagescript.rs`, `adblock.rs`, `notify.rs`
+
+`pagescript::script` builds the script added to every page; `mute` returns the script that mutes or unmutes a page's media. `adblock::rules_json` builds the rule list; `prepare` / `attach` install it in each platform's engine. `notify::system_notification` shows a desktop notification. See [Page script](Page-Script).
 
 ## `ui.rs` — the interface
 
@@ -54,17 +61,12 @@ All functions are `impl Browser` methods called from `draw`, in this order:
 | `draw` | Entry point: theme, favicons, then everything below |
 | `draw_tab_strip` | Tabs (favicon/spinner/crash icon, title, close), private badge, new-tab button |
 | `draw_toolbar` | Back, forward, reload, home, address bar, zoom chip, bookmark star, downloads (with badge), menu; the loading bar |
-| `draw_suggestions` | Address-bar suggestion popup |
 | `draw_bookmarks_bar` | Bookmarks bar |
 | `draw_side_panel` | Frame for `draw_history`, `draw_bookmarks`, `draw_downloads`, `draw_settings` |
-| `draw_content` | The page (resize, paint, blit), the start page, or the crash panel; the link status bubble |
+| `draw_content` | Reserves the page area (the engine's view is placed there), or draws the start page, reader mode or an internal page |
 | `draw_start_page` | Logo, search box, bookmark tiles, frequently-visited tiles |
 | `draw_find_bar` | Find bar (query, n of m, up/down, match case) |
-| `draw_print_dialog` | Print progress, printer and copies, Save as PDF / Open PDF |
 | `draw_vertical_tabs` | Tab list down the side (when tabs are set to "Down the side") |
-| `draw_page_controls` | The active tab's dialog/popup and its outcome |
-| `draw_menu` | Main menu |
-| `draw_toast` | Short fading notices ("Bookmarked", "Zoom 110%") |
 
 Helpers: `style` (applies theme, accent, interface size, density and rounding from `Settings`; only re-run when `style_key` changes) / `set_theme`, `letter_icon` (coloured letter tile when there's no favicon), `link_row` (row with hover ✕ used by history and bookmarks), `truncate`, `host_of`.
 
@@ -74,41 +76,33 @@ Helpers: `style` (applies theme, accent, interface size, density and rounding fr
 
 Every setting is one entry in `ITEMS`: its `Section`, a `Setting` id, label, description, search keywords, and whether its control sits beside the text or under it (`wide`). The page shows the selected section, or, while the search box has text, every item whose label, description, keywords or section name contains all the search words. `Browser::setting_control` draws each control (a `match` on `Setting`); `visible` hides settings that depend on another (e.g. the custom search address only for the Custom engine). Helpers: `toggle` (animated switch), `segmented`, `card`, `row`.
 
-After drawing, if any setting changed the profile is marked for saving and `Browser::apply_engine_settings` sends changed engine preferences to Servo.
+After drawing, if any setting changed the profile is marked for saving and `Browser::apply_engine_settings` applies the ones that affect pages (theme, ad blocking).
 
 **Adding a setting:** add the field to `Settings`, a `Setting` variant, an `ITEMS` entry, and an arm in `setting_control`.
 
-## `features_ui.rs` — interface for newer features
+## `features_ui.rs` — reader mode and shortcuts
 
-`draw_devtools` (bottom console panel), `draw_site_info` (padlock popup), `draw_notification` (web notification card), `draw_reader` (reader mode in place of the page), `draw_shortcuts_page` (`ferrum://shortcuts`, from the `SHORTCUTS` table).
+`draw_reader` (reader mode in place of the page) and `draw_shortcuts_page` (`ferrum://shortcuts`, from the `SHORTCUTS` table).
 
-## `blocker.rs` — ad and tracker blocking
+## `blocker.rs` — the block list
 
-`Blocker` (`should_block`, `count_blocked`, `blocked_on`, `load_list_in_background`), `base_domain`. See [Servo callbacks](Servo-Callbacks#ad-and-tracker-blocking).
+`Blocker` (`new`, `load_list`, `should_block`, `domains`, `domain_count`) and `base_domain`. The list is built in plus Peter Lowe's list, cached in the profile and refreshed weekly. See [Page script](Page-Script#ad-and-tracker-blocking).
 
 ## `reader.rs` — reader mode
 
 `SCRIPT` runs in the page and returns the article as JSON: it takes `<article>`, `<main>` or the element with the most paragraph text, skips navigation, asides, footers and ad/share/comment blocks, and lists headings, paragraphs, quotes, list items and code blocks. `ReaderDoc::parse` reads it; `draw` lays it out natively in a centred column with its own toolbar (text size, theme, width, reading time).
 
-## `devtools.rs` — console and page source
+## `devtools.rs` — page source
 
-`Console` (per tab, at most 1000 messages), `DevTools` (prompt text, history, filter), `draw_console`, `format_value` (a `JSValue` the way a console prints it), `Source` and `draw_source` (line-numbered, colour-highlighted HTML; only the visible lines are laid out).
+`Source` and `draw_source` (line-numbered, colour-highlighted HTML; only the visible lines are laid out). Developer tools are the engine's own inspector (`WebView::open_devtools`).
 
 ## `bookmarks_io.rs`, `updates.rs`
 
 `export` / `import` of Netscape bookmark files (folders are flattened; only http/https/file links are imported). `updates::check` asks the GitHub releases API on a background thread and compares versions numerically (`parse_version`).
 
-## `compat.rs` — site fixes
-
-A user script added to every page through Servo's `UserContentManager`. It finds stylesheet rules for Chrome's and Firefox's slider pseudo-elements, renames them to Servo's `::slider-thumb` / `::slider-track` / `::slider-fill` and adds them back.
-
 ## `theme.rs` — colour themes
 
 `ThemePreset` lists the themes. `Ferrum` is the standard egui look and follows the light/dark setting; every other preset has a `Palette` (dark or light, panel, surface, text, suggested accent). `apply` paints an egui `Visuals` from a palette: panels and dialogs use `panel`, the toolbar, text fields and cards use `surface`, and widget fills are blends of panel and text (`mix`). `ui::style` resets both egui styles, applies the preset's palette to the matching one, and switches egui to that mode; `style_key` makes this run only when a look-related setting changes.
-
-## Engine settings
-
-`browser::engine_prefs` maps Ferrum settings to Servo preferences: HTTPS-only (`network_enforce_tls_enabled`), notifications (`dom_notification_enabled`), location (`dom_geolocation_enabled`), font size (`fonts_default_size`) and user agent (`user_agent`; empty = Servo's default, remembered at start-up). They're set in `Preferences` at start-up and sent with `Servo::set_preference` when changed, taking effect for pages loaded afterwards.
 
 ## `profile.rs` — settings and data
 
@@ -120,19 +114,15 @@ A user script added to every page through Servo's `UserContentManager`. It finds
 
 ## `find.rs` — find in page
 
-`FindState` (`open`, `query`, `match_case`, `result`) with `search_if_changed`, `step`, `close`, `reset`. Servo has no find API, so a script (`SCRIPT`) runs in the page: it walks text nodes with a `TreeWalker`, wraps matches in `<mark data-ferrum-find>`, colours the current one orange, scrolls it into view and returns `[current, total]`. Closing the bar runs it with an empty query, which unwraps all marks. `reset` is called on navigation and tab switches.
+`FindState` (`open`, `query`, `match_case`, `result`) with `search_if_changed`, `step`, `close`, `reset`. A script (`SCRIPT`) runs in the page: it walks text nodes with a `TreeWalker`, wraps matches in `<mark data-ferrum-find>`, colours the current one orange, scrolls it into view and returns `[current, total]`. Closing the bar runs it with an empty query, which unwraps all marks. `reset` is called on navigation and tab switches.
 
-## `print.rs` — printing
+## Printing
 
-`PrintJob` is a small state machine advanced from `Browser::pump`: **Measuring** (ask the page for its height) → **Capturing** (scroll one screen, `take_screenshot`, repeat, up to 40 screens) → **Ready** (scroll restored, PDF built, printers listed) or **Failed**. `stitch` joins the screenshots and drops the overlap of the last screen; `write_pdf` cuts the result into A4 pages and writes a PDF by hand (one JPEG image per page). `list_printers` uses `lpstat` (macOS/Linux) or `Get-Printer` (Windows); `send_to_printer` uses `lp` or PowerShell's `PrintTo`.
+`Browser::print` opens the engine's own print dialog (`WebView::print`), which also offers Save as PDF.
 
 ## `location.rs` — address bar input
 
 `input_to_url(text, engine)` decides, in order: full URL (`https://…`, `about:`, `data:`, `file:`) → local file path → host name (`example.com`, `localhost:3000`; local addresses get `http`) → search.
-
-## `keys.rs` — keyboard conversion
-
-`keyboard_event(&KeyEvent, ModifiersState)` and `modifiers(ModifiersState)`. See [Input handling](Input-Handling#keyboard-conversion-keysrs).
 
 ## `icons.rs` — icons
 

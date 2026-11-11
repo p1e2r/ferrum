@@ -1,13 +1,13 @@
 # Downloads
 
-Servo has no download API yet, so Ferrum runs downloads itself (`downloads.rs`), using [ureq](https://github.com/algesten/ureq) with rustls.
+Ferrum runs downloads itself (`downloads.rs`), using [ureq](https://github.com/algesten/ureq) with rustls, so every platform shows the same progress, cancel and open buttons. When the engine starts a download (`with_download_started_handler`), or a link points at a file (`with_navigation_handler` + `looks_like_download`), Ferrum cancels the engine's download and runs its own.
 
 ## How a download starts
 
 1. **Navigation to a file.** `Delegate::request_navigation` checks `looks_like_download(url)` — whether the path ends in a file extension such as `.zip`, `.exe`, `.dmg`, `.pdf`, `.mp4` (list in `downloads.rs`). If so, it denies the navigation (the page stays put) and queues `Event::Download`.
 2. **Context menu.** "Save link as…" / "Save image as…" call `Browser::start_download` directly.
 
-`start_download` copies the site's cookies from Servo (`site_data_manager().cookies_for_url`) into a `Cookie` header and sends the page as `Referer`, so downloads behind a login work. If "Ask where to save each file" is on, a system save dialog picks the target.
+`start_download` copies the site's cookies from the engine (`WebView::cookies_for_url`) into a `Cookie` header and sends the page as `Referer`, so downloads behind a login work. If "Ask where to save each file" is on, a system save dialog picks the target.
 
 ## Running
 
@@ -27,5 +27,5 @@ The downloads panel (Ctrl+J, or the toolbar button with its counter badge) lists
 
 ## Limitations
 
-- Downloads triggered by a `Content-Disposition: attachment` response on a URL *without* a file extension (common for "Download" buttons that hit an API) aren't detected, because Servo's navigation callback only sees the URL. Use "Save link as…" for those.
+- Downloads that need the page's POST data or a one-time token tied to the engine's session may fail when re-requested by Ferrum's downloader.
 - Downloads use the page's cookies but not its exact HTTP stack, so sites that check things like TLS fingerprints may behave differently.

@@ -1,64 +1,24 @@
 # Input handling
 
-> **Note (0.7.0):** Ferrum now uses the system web engine through wry instead of Servo. Parts of this page describe the old Servo design; see [Architecture](Architecture) and the [Module reference](Module-Reference) for the current one.
+## Who gets what
 
+- **Over the interface** (tab strip, toolbar, panels, internal pages): winit delivers the events to `Browser::handle_window_event`, which passes them to egui.
+- **Over the page:** the engine's native view gets the mouse and keyboard directly. Ferrum never forwards input to pages.
+- **Over a popup:** the popup window's own egui context gets them (`Overlays::handle_event`).
 
-Every winit `WindowEvent` goes to `Browser::handle_window_event`, which decides who gets it. The order matters:
+## Shortcuts
 
-```
-WindowEvent
-  │
-  ├─ window-level (close, resize, scale change, redraw, modifiers) → handled here
-  │
-  ├─ key press matching a browser shortcut → handle_shortcut, stop
-  │
-  ├─ egui.on_window_event  (the interface sees everything)
-  │
-  └─ forward_to_page  (the page gets what the interface didn't take)
-```
+Shortcuts are handled by `Browser::handle_shortcut(&Shortcut)` from two sources:
 
-## Shortcuts first
+1. Ferrum's window: `shortcut_from` turns a winit `KeyEvent` into a `Shortcut` (key name, Ctrl/⌘/Shift/Alt).
+2. A page that has the keyboard: the [page script](Page-Script) catches the same keys and sends `{t:"key"}`; the page never sees them. Ctrl+C/V/X/A/Z and normal typing stay with the page.
 
-`handle_shortcut` runs before egui so shortcuts work even while typing in the address bar or a page. Cmd is used on macOS and Ctrl elsewhere (`cmd` in the code). The full list is in the README; adding one is a single match arm:
+On macOS ⌘ is used where other systems use Ctrl.
 
-```rust
-(_, "d") if cmd => self.toggle_bookmark(),
-```
+## Keyboard focus
 
-## What reaches the page
+When egui wants the keyboard (address bar, find bar, settings fields), `Browser::layout_pages` takes it back from the page with `focus_interface`: wry's `focus_parent` on macOS and Windows; on Linux an explicit `XSetInputFocus` on Ferrum's window, because WebKitGTK keeps X11 focus in its child window. Showing a tab's page gives the page the keyboard again.
 
-`forward_to_page` drops page input when:
+## Window edges
 
-- the active tab has crashed or has no webview,
-- a page dialog or popup for this tab is open, or the main menu is open (`blocked`),
-- for the keyboard: egui consumed the key or wants keyboard input (e.g. the address bar has focus),
-- for mouse buttons: the pointer is over interface (`egui_is_using_pointer`) or outside the page area.
-
-Mouse positions are converted from window pixels to webview pixels with `page_point` (see [Rendering pipeline](Rendering-Pipeline#coordinates)). When the pointer leaves the page area, Servo gets `MouseLeftViewport`, so hover effects end correctly.
-
-Special cases:
-
-- Mouse buttons 4/5 (Back/Forward) navigate instead of reaching the page.
-- Ctrl/Cmd + wheel zooms instead of scrolling.
-- Wheel line deltas are scaled to 76 px per line, matching Servo's own shell.
-- A mouse press on the page removes focus from any egui text field, so typing goes to the page next.
-
-## Keyboard conversion (keys.rs)
-
-Servo wants W3C UI Events key events (`keyboard_types::KeyboardEvent`). winit's `KeyCode` and `NamedKey` enums use the same names as the W3C `code` and `key` values, so `keys.rs` converts by name:
-
-```rust
-Code::from_str(&format!("{code:?}"))      // KeyCode::KeyA  → Code::KeyA
-NamedKey::from_str(&format!("{named:?}")) // NamedKey::Enter → NamedKey::Enter
-```
-
-and handles the few differences explicitly: winit's `Super*` is W3C `Meta*`, and Space is the character `" "`, not a named key. Dead keys fall back to their composed text when winit provides it. The unit test `names_line_up` guards against future renames in either crate.
-
-## The address bar
-
-The address bar is an egui `TextEdit` with id `"location"`:
-
-- Clicking it (or Ctrl+L / F6) selects all text, done by writing a selection into the `TextEditState`.
-- Typing sets `editing = true`, which stops `sync_location` from overwriting the text with the page URL.
-- While editing, `draw_suggestions` shows up to 7 matches from `Profile::suggestions`; ↑/↓ move `suggestion_index`.
-- Enter navigates to the selected suggestion, or turns the text into a URL/search with `location::input_to_url`. Esc restores the page URL.
+With the custom title bar (no system frame), `handle_window_edges` turns the 5 px around the window into resize handles (`drag_resize_window`), and the empty strip next to the tabs moves the window (`drag_window`; double-click maximises).

@@ -2,20 +2,15 @@
 
 ## Build times
 
-The first build compiles Servo (~800 crates) and downloads a prebuilt SpiderMonkey for the target. It needs ~8 GB RAM and ~20 GB disk.
+Ferrum uses the system's web engine, so there's no browser engine to compile: a first build takes a few minutes (about 3–6 on a recent machine, ~10 on a 2-core cloud VM) and needs ~2 GB of disk. After that, changes to Ferrum's own code rebuild in under a minute. Release builds use thin link-time optimisation and take a little longer; `scripts/build-macos.sh` builds twice (Apple Silicon + Intel).
 
-> **Build time disclaimer.** The first build compiles all of Servo (~800 crates), so it is slow, and how slow depends on your machine:
->
-> | Machine | First build (approx.) |
-> |---|---|
-> | Apple Silicon Mac (M1–M4, 8+ cores, 16 GB) | 15–25 min |
-> | Recent 8-core Windows/Linux desktop, 16 GB | 20–30 min |
-> | 4-core laptop, 8 GB | 45–60+ min |
-> | 2-core / 7 GB cloud VM (measured: debug build) | ~23 min debug, ~31 min after a dependency change |
->
-> Only the last row was measured; the others are estimates. Release builds (`--release`, with link-time optimisation) take longer than debug builds, and `scripts/build-macos.sh` builds twice (Apple Silicon + Intel). With less than 8 GB of RAM, use `cargo build -j2` to avoid running out of memory. After the first build, changes to Ferrum's own code rebuild in about a minute.
+On Linux, install the WebKitGTK development packages first:
 
-`Cargo.toml` sets `opt-level = 2` for dependencies even in debug builds, because an unoptimised Servo is too slow to browse with.
+```sh
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
+```
+
+At run time Ferrum needs WebKitGTK 4.1 on Linux, WebView2 on Windows (built into Windows 10 and 11) and macOS 11 or newer.
 
 ## From a Mac: `scripts/build.sh`
 
@@ -42,11 +37,11 @@ On Apple Silicon, `arm64` is native; `amd64` runs under emulation and is several
 
 ### macOS → Windows (`build-windows.sh`)
 
-Cross-compiles `x86_64-pc-windows-msvc` with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), which fetches the MSVC runtime and Windows SDK and links with LLVM's `clang-cl`/`lld-link`. SpiderMonkey comes prebuilt for Windows, so it isn't cross-compiled.
+Cross-compiles `x86_64-pc-windows-msvc` with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), which fetches the MSVC runtime and Windows SDK and links with LLVM's `clang-cl`/`lld-link`.
 
 - Needs `brew install llvm cmake ninja nasm` and `cargo install cargo-xwin` (the script installs it if missing).
 - Running it accepts the Microsoft SDK licence (`XWIN_ACCEPT_LICENSE=1`).
-- This is the least common route for a project of Servo's size. If a native dependency refuses to cross-compile, use the CI build below.
+- If a native dependency refuses to cross-compile, use the CI build below.
 
 ## CI: `.github/workflows/build.yml`
 
@@ -70,9 +65,9 @@ git push origin v0.2.0
 
 Pull requests are built and tested but publish nothing.
 
-### macOS signing and the JIT
+### macOS signing
 
-`build-macos.sh` signs with the hardened runtime and `assets/Ferrum.entitlements`. The entitlements `com.apple.security.cs.allow-jit` and `allow-unsigned-executable-memory` are required: without them SpiderMonkey can't allocate executable memory for its JIT, `JSEngine::init` fails with `InitFailed`, and Ferrum crashes at launch. The app icon is generated from `assets/icon.png` with `sips` and `iconutil`.
+`build-macos.sh` signs with the hardened runtime and `assets/Ferrum.entitlements` (camera and microphone, for sites you allow). The app icon is generated from `assets/icon.png` with `sips` and `iconutil`.
 
 ## Tests
 
@@ -80,4 +75,4 @@ Pull requests are built and tested but publish nothing.
 cargo test --bins
 ```
 
-Unit tests cover address-bar parsing (`location.rs`), download file naming and detection (`downloads.rs`), the keyboard name mapping (`keys.rs`), PDF output (`print.rs`), tracker matching and list parsing (`blocker.rs`), article parsing (`reader.rs`), console formatting and source highlighting (`devtools.rs`), bookmark files (`bookmarks_io.rs`) and version comparison (`updates.rs`).
+Unit tests cover address-bar parsing (`location.rs`), download file naming and detection (`downloads.rs`), block-page detection (`browser.rs`), ad-block rules (`adblock.rs`), tracker matching and list parsing (`blocker.rs`), article parsing (`reader.rs`), source highlighting (`devtools.rs`), bookmark files (`bookmarks_io.rs`) and version comparison (`updates.rs`).

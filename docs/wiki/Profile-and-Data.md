@@ -19,17 +19,17 @@ Ferrum/
 ├── history.json
 ├── session.json
 ├── blocklist.txt    ← cached ad/tracker server list (refreshed weekly)
-└── engine/          ← Servo's own data: cookies, localStorage, caches
+└── engine/          ← the engine's data on Windows and Linux: cookies, storage, caches
 ```
 
-The `engine` folder is passed to Servo as `Opts::config_dir`, which makes cookies and site storage persistent.
+The `engine` folder is passed to wry as the `WebContext` data directory (WebView2 and WebKitGTK). On macOS, WebKit keeps website data in its own per-app store.
 
 ## Private windows
 
 `ferrum --private` (or the menu / Ctrl+Shift+N, which launches a new process with that flag) loads `Profile::load(None)`:
 
 - `dir` is `None`, so `flush`, `save_session` and `record_visit` do nothing,
-- Servo gets `Opts::temporary_storage = true`, so cookies and site data live in memory only.
+- Web views are created with `with_incognito(true)`, so cookies and site data live in memory only.
 
 ## Formats
 
@@ -76,17 +76,17 @@ Look-related fields (theme, accent, size, density, rounding) are hashed by `styl
 
 **bookmarks.json** — ordered list (the order is the bookmarks bar order):
 ```json
-[{ "title": "Servo", "url": "https://servo.org/" }]
+[{ "title": "GitHub", "url": "https://github.com/" }]
 ```
 
 **history.json** — one entry per URL, oldest first, capped at 5,000 (`MAX_HISTORY`):
 ```json
-[{ "url": "https://servo.org/", "title": "Servo", "visits": 3, "last_visit": 1762780000 }]
+[{ "url": "https://github.com/", "title": "GitHub", "visits": 3, "last_visit": 1762780000 }]
 ```
 
 **session.json** — open tabs when Ferrum last closed, with their titles (shown on restored tabs before they load), and which tab was active:
 ```json
-{ "tabs": ["https://servo.org/"], "titles": ["Servo"], "active": 0 }
+{ "tabs": ["https://github.com/"], "titles": ["GitHub"], "pinned": [false], "active": 0 }
 ```
 
 ## Saving
