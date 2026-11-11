@@ -176,7 +176,7 @@ fn run(
     cancel: &AtomicBool,
     notify: &Notify,
 ) -> Result<(), String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(crate::tls_config())
         .timeout_connect(Some(Duration::from_secs(20)))
         .user_agent(format!("Ferrum/{}", crate::VERSION))
         .build()

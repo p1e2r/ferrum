@@ -814,16 +814,28 @@ impl Browser {
                         ui.label(RichText::new("Ferrum is up to date").weak());
                         check = ui.small_button("Check again").clicked();
                     },
-                    Some(UpdateStatus::Available { version, url }) => {
+                    Some(UpdateStatus::Available { version, asset, .. }) => {
                         ui.label(RichText::new(format!("Ferrum {version} is available")).strong().color(self.accent()));
-                        if ui.button("Download").clicked() {
-                            if let Ok(url) = Url::parse(&url) {
-                                self.open_tab(Some(url));
-                            }
+                        let label = if asset.is_some() { "Update and restart" } else { "Download" };
+                        if ui.button(label).clicked() {
+                            self.start_update();
                         }
                     },
+                    Some(UpdateStatus::Downloading { version, received, total }) => {
+                        let fraction = total.filter(|t| *t > 0).map(|t| received as f32 / t as f32);
+                        let text = format!("Downloading Ferrum {version}… {}", crate::downloads::human_size(received));
+                        match fraction {
+                            Some(f) => ui.add(egui::ProgressBar::new(f).desired_width(260.0).text(text)),
+                            None => ui.add(egui::ProgressBar::new(0.0).animate(true).desired_width(260.0).text(text)),
+                        };
+                    },
+                    Some(UpdateStatus::Installing { version }) | Some(UpdateStatus::Installed { version, .. }) => {
+                        ui.spinner();
+                        ui.label(format!("Installing Ferrum {version}… Ferrum will restart with your tabs."));
+                    },
                     Some(UpdateStatus::Failed(e)) => {
-                        ui.label(RichText::new("Couldn't check for updates").weak()).on_hover_text(e);
+                        ui.label(RichText::new("Couldn't update").weak()).on_hover_text(&e);
+                        ui.label(RichText::new(e).weak().size(11.0));
                         check = ui.small_button("Try again").clicked();
                     },
                 });

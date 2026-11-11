@@ -453,9 +453,13 @@ impl Browser {
 
         if let Some(url) = initial_url.as_deref().and_then(|u| input_to_url(u, &browser.profile.settings)) {
             browser.open_tab(Some(url));
-        } else if browser.profile.settings.restore_session && !browser.profile.is_private() {
+        } else if (browser.profile.settings.restore_session || browser.profile.settings.resume_once) && !browser.profile.is_private() {
             // Restored tabs stay unloaded until selected; only the active one loads now.
             let (saved, active) = browser.profile.load_session();
+            if browser.profile.settings.resume_once {
+                browser.profile.settings.resume_once = false;
+                browser.profile.mark_dirty();
+            }
             let zoom = browser.profile.settings.default_zoom;
             for saved in saved {
                 if let Ok(url) = Url::parse(&saved.url) {
@@ -948,6 +952,7 @@ impl Browser {
 
     /// Handle what the engine and background threads reported.
     pub fn pump(&mut self) {
+        self.finish_update();
         let events: Vec<Event> = std::mem::take(&mut *self.events.borrow_mut());
         for event in events {
             match event {
@@ -1127,7 +1132,7 @@ impl Browser {
         let sender = self.favicons.0.clone();
         let proxy = self.proxy.clone();
         let _ = std::thread::Builder::new().name("favicon".into()).spawn(move || {
-            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10))).build().into();
+            let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(crate::tls_config()).timeout_global(Some(Duration::from_secs(10))).build().into();
             let Ok(mut response) = agent.get(&href).call() else { return };
             let Ok(bytes) = response.body_mut().with_config().limit(1024 * 1024).read_to_vec() else { return };
             let Ok(img) = image::load_from_memory(&bytes) else { return };
@@ -1568,6 +1573,43 @@ impl Browser {
         self.update = Some(crate::updates::check(crate::VERSION, Arc::new(move || {
             let _ = proxy.send_event(WakeUp);
         })));
+    }
+
+    /// "Update now": download and install the new version, then restart.
+    pub(crate) fn start_update(&mut self) {
+        let Some(UpdateStatus::Available { version, url, asset }) = self.update_status() else { return };
+        let Some(slot) = self.update.clone() else { return };
+        match asset {
+            Some(asset) => {
+                let proxy = self.proxy.clone();
+                crate::updates::install(version, asset, slot, Arc::new(move || {
+                    let _ = proxy.send_event(WakeUp);
+                }));
+            },
+            // No package for this computer: show the release page.
+            None => {
+                if let Ok(url) = Url::parse(&url) {
+                    self.open_tab(Some(url));
+                }
+            },
+        }
+    }
+
+    /// Once an update is installed, restart into it with the same tabs.
+    fn finish_update(&mut self) {
+        if self.quit_requested {
+            return;
+        }
+        let Some(UpdateStatus::Installed { program, .. }) = self.update_status() else { return };
+        self.profile.settings.resume_once = true;
+        self.profile.mark_dirty();
+        match crate::updates::relaunch_after_exit(&program) {
+            Ok(()) => self.request_quit(),
+            Err(e) => {
+                self.profile.settings.resume_once = false;
+                self.toast(format!("Updated. Restart Ferrum to use the new version ({e})"));
+            },
+        }
     }
 
     pub(crate) fn update_status(&self) -> Option<UpdateStatus> {

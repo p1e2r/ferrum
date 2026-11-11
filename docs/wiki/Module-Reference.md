@@ -102,7 +102,7 @@ After drawing, if any setting changed the profile is marked for saving and `Brow
 
 ## `bookmarks_io.rs`, `updates.rs`
 
-`export` / `import` of Netscape bookmark files (folders are flattened; only http/https/file links are imported). `updates::check` asks the GitHub releases API on a background thread and compares versions numerically (`parse_version`).
+`export` / `import` of Netscape bookmark files (folders are flattened; only http/https/file links are imported). `updates::check` asks the GitHub releases API on a background thread, compares versions numerically (`parse_version`) and picks this computer's package. `updates::install` downloads it and swaps it in for the running copy (macOS: mounts the DMG and replaces `Ferrum.app`; Windows: unpacks the zip and renames the running `ferrum.exe` out of the way; Linux: replaces the binary), then `relaunch_after_exit` starts the new version once Ferrum has quit, reopening the same tabs (`resume_once`). `clean_up_after_update` removes leftovers at start-up.
 
 ## `theme.rs` — colour themes
 

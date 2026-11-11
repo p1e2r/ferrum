@@ -185,7 +185,7 @@ fn add_list(domains: &RwLock<HashSet<String>>, text: &str) -> usize {
 }
 
 fn download_list() -> Result<String, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(crate::tls_config())
         .timeout_global(Some(Duration::from_secs(30)))
         .build()
         .into();

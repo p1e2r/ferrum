@@ -282,14 +282,24 @@ impl Browser {
             close = true;
         }
         ui.separator();
-        if let Some(crate::updates::UpdateStatus::Available { version, url }) = self.update_status() {
-            let label = RichText::new(format!("Update available: Ferrum {version}")).color(self.accent()).strong();
-            if ui.add(egui::Button::new(label).frame(false).min_size(vec2(width, 26.0))).clicked() {
-                if let Ok(url) = Url::parse(&url) {
-                    self.open_tab(Some(url));
+        match self.update_status() {
+            Some(crate::updates::UpdateStatus::Available { version, .. }) => {
+                let label = RichText::new(format!("Update to Ferrum {version} and restart")).color(self.accent()).strong();
+                if ui.add(egui::Button::new(label).frame(false).min_size(vec2(width, 26.0))).clicked() {
+                    self.start_update();
                 }
-                close = true;
-            }
+            },
+            Some(crate::updates::UpdateStatus::Downloading { received, total, .. }) => {
+                let fraction = total.filter(|t| *t > 0).map(|t| received as f32 / t as f32).unwrap_or(0.0);
+                ui.add(egui::ProgressBar::new(fraction).desired_width(width).text("Downloading update…"));
+            },
+            Some(crate::updates::UpdateStatus::Installing { .. }) | Some(crate::updates::UpdateStatus::Installed { .. }) => {
+                ui.label(RichText::new("Installing update…").color(self.accent()));
+            },
+            Some(crate::updates::UpdateStatus::Failed(e)) if e.starts_with("Ferrum can't") || e.contains("update") => {
+                ui.label(RichText::new("Update failed — see Settings → About").weak()).on_hover_text(e);
+            },
+            _ => {},
         }
         if row(ui, "Settings", "Ctrl+,") {
             self.open_settings();

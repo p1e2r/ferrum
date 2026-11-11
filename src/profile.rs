@@ -183,6 +183,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// Last update check, seconds since the Unix epoch.
     pub last_update_check: u64,
+    /// Reopen the tabs at the next start even if restoring is off (after an update).
+    pub resume_once: bool,
     /// Unload tabs that haven't been used for a while (they reload when selected).
     pub sleep_tabs: bool,
     pub sleep_minutes: u32,
@@ -249,6 +251,7 @@ impl Default for Settings {
             site_permissions: BTreeMap::new(),
             check_updates: true,
             last_update_check: 0,
+            resume_once: false,
             sleep_tabs: true,
             sleep_minutes: 30,
             reader_font_size: 19.0,

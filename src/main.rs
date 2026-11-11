@@ -66,6 +66,13 @@ pub fn timing(label: &str) {
 #[derive(Debug, Clone, Copy)]
 pub struct WakeUp;
 
+/// Ferrum's own connections (downloads, updates, block list, favicons) trust
+/// the certificates the operating system trusts, as the web engine does, so
+/// they also work on networks that add their own certificate (schools, offices).
+pub fn tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build()
+}
+
 struct Args {
     url: Option<String>,
     private: bool,
@@ -184,6 +191,7 @@ fn install_crash_reporter() {
 fn main() -> Result<(), Box<dyn Error>> {
     timing("process start");
     install_crash_reporter();
+    updates::clean_up_after_update();
     let args = parse_args();
     rustls::crypto::ring::default_provider()
         .install_default()

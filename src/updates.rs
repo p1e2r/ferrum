@@ -1,10 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Ferrum contributors
 
-//! Checks GitHub for a newer Ferrum release, on a background thread.
+//! Checks GitHub for a newer Ferrum release, and installs it in one click:
+//! the package for this computer is downloaded, the new version is put in
+//! place of the running one, and Ferrum restarts (the old version keeps
+//! running until then; operating systems allow replacing a running program
+//! by renaming it out of the way).
+//!
+//! - macOS: the `.dmg` for this processor is mounted and `Ferrum.app` copied
+//!   over the current app bundle.
+//! - Windows: the `.zip` is unpacked and `ferrum.exe` replaced.
+//! - Linux: the `.tar.gz` is unpacked and the `ferrum` binary replaced.
 
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const RELEASES_API: &str = "https://api.github.com/repos/p1e2r/ferrum/releases?per_page=30";
 pub const RELEASES_PAGE: &str = "https://github.com/p1e2r/ferrum/releases";
@@ -13,8 +24,25 @@ pub const RELEASES_PAGE: &str = "https://github.com/p1e2r/ferrum/releases";
 pub enum UpdateStatus {
     Checking,
     UpToDate,
-    Available { version: String, url: String },
+    /// `url` is the release page; `asset` the package for this computer, if there is one.
+    Available { version: String, url: String, asset: Option<String> },
+    Downloading { version: String, received: u64, total: Option<u64> },
+    Installing { version: String },
+    /// Installed; restart with this program.
+    Installed { version: String, program: PathBuf },
     Failed(String),
+}
+
+/// The part of a package name that matches this computer.
+fn package_suffix() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("macos-apple-silicon.dmg"),
+        ("macos", "x86_64") => Some("macos-intel.dmg"),
+        ("windows", "x86_64") => Some("windows-x86_64.zip"),
+        ("linux", "x86_64") => Some("linux-x86_64.tar.gz"),
+        ("linux", "aarch64") => Some("linux-arm64.tar.gz"),
+        _ => None,
+    }
 }
 
 /// `"v0.6.2"` → `(0, 6, 2)`.
@@ -25,18 +53,24 @@ pub fn parse_version(v: &str) -> Option<(u32, u32, u32)> {
     Some((parts.next()??, parts.next().flatten().unwrap_or(0), parts.next().flatten().unwrap_or(0)))
 }
 
-/// The newest (tag, page) in a GitHub releases list, by version number.
-fn newest(json: &serde_json::Value) -> Option<(String, String)> {
+/// The newest (version, page, package for this computer) in a GitHub releases list.
+fn newest(json: &serde_json::Value) -> Option<(String, String, Option<String>)> {
     json.as_array()?
         .iter()
         .filter(|r| !r["draft"].as_bool().unwrap_or(false))
         .filter_map(|r| {
             let tag = r["tag_name"].as_str()?;
             let url = r["html_url"].as_str().unwrap_or(RELEASES_PAGE);
-            Some((parse_version(tag)?, tag.trim_start_matches('v').to_string(), url.to_string()))
+            let asset = package_suffix().and_then(|suffix| {
+                r["assets"].as_array()?.iter().find_map(|a| {
+                    let name = a["name"].as_str()?;
+                    name.ends_with(suffix).then(|| a["browser_download_url"].as_str().map(str::to_owned)).flatten()
+                })
+            });
+            Some((parse_version(tag)?, tag.trim_start_matches('v').to_string(), url.to_string(), asset))
         })
-        .max_by_key(|(v, _, _)| *v)
-        .map(|(_, tag, url)| (tag, url))
+        .max_by_key(|(v, ..)| *v)
+        .map(|(_, tag, url, asset)| (tag, url, asset))
 }
 
 /// Start a check; the result appears in the returned slot. `notify` wakes the UI.
@@ -47,7 +81,7 @@ pub fn check(current: &str, notify: Arc<dyn Fn() + Send + Sync>) -> Arc<Mutex<Up
     let _ = std::thread::Builder::new().name("update-check".into()).spawn(move || {
         let status = match fetch() {
             Ok(json) => match newest(&json) {
-                Some((version, url)) if parse_version(&version) > parse_version(&current) => UpdateStatus::Available { version, url },
+                Some((version, url, asset)) if parse_version(&version) > parse_version(&current) => UpdateStatus::Available { version, url, asset },
                 _ => UpdateStatus::UpToDate,
             },
             Err(e) => UpdateStatus::Failed(e),
@@ -60,8 +94,223 @@ pub fn check(current: &str, notify: Arc<dyn Fn() + Send + Sync>) -> Arc<Mutex<Up
     slot
 }
 
+/// Download and install `asset` on a background thread, reporting progress in `slot`.
+pub fn install(version: String, asset: String, slot: Arc<Mutex<UpdateStatus>>, notify: Arc<dyn Fn() + Send + Sync>) {
+    let _ = std::thread::Builder::new().name("update-install".into()).spawn(move || {
+        let set = |s: UpdateStatus| {
+            if let Ok(mut slot) = slot.lock() {
+                *slot = s;
+            }
+            notify();
+        };
+        set(UpdateStatus::Downloading { version: version.clone(), received: 0, total: None });
+        let work = std::env::temp_dir().join(format!("ferrum-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        let result = std::fs::create_dir_all(&work)
+            .map_err(|e| e.to_string())
+            .and_then(|_| download(&asset, &work, |received, total| set(UpdateStatus::Downloading { version: version.clone(), received, total })))
+            .and_then(|package| {
+                set(UpdateStatus::Installing { version: version.clone() });
+                put_in_place(&package, &work)
+            });
+        let _ = std::fs::remove_dir_all(&work);
+        match result {
+            Ok(program) => set(UpdateStatus::Installed { version, program }),
+            Err(e) => {
+                log::error!("Update failed: {e}");
+                set(UpdateStatus::Failed(e))
+            },
+        }
+    });
+}
+
+fn download(url: &str, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<PathBuf, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(crate::tls_config())
+        .timeout_connect(Some(Duration::from_secs(20)))
+        .user_agent(format!("Ferrum/{}", crate::VERSION))
+        .build()
+        .into();
+    let mut response = agent.get(url).call().map_err(|e| format!("Download failed: {e}"))?;
+    let total = response.body().content_length();
+    let name = url.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("package");
+    let path = dir.join(name);
+    let mut file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    let mut reader = response.body_mut().as_reader();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut received = 0u64;
+    let mut last = Instant::now();
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| format!("Download failed: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        received += n as u64;
+        if last.elapsed() > Duration::from_millis(200) {
+            progress(received, total);
+            last = Instant::now();
+        }
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    if total.is_some_and(|t| t != received) {
+        return Err("The download was incomplete".into());
+    }
+    Ok(path)
+}
+
+fn run(cmd: &mut std::process::Command) -> Result<(), String> {
+    let out = cmd.output().map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("{:?} failed: {}", cmd.get_program(), String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
+/// Where a file can't be written, say so in words.
+fn no_permission(e: std::io::Error, place: &Path) -> String {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        format!("Ferrum can't write to {}. Move Ferrum to a folder you own, or install the update by hand.", place.display())
+    } else {
+        e.to_string()
+    }
+}
+
+/// Swap `new` in for `current`, keeping the old one at `old` until it's gone.
+fn swap(current: &Path, new: &Path, old: &Path) -> Result<(), String> {
+    remove_any(old);
+    std::fs::rename(current, old).map_err(|e| no_permission(e, current.parent().unwrap_or(current)))?;
+    if let Err(e) = std::fs::rename(new, current) {
+        // Put the old one back.
+        let _ = std::fs::rename(old, current);
+        return Err(no_permission(e, current.parent().unwrap_or(current)));
+    }
+    Ok(())
+}
+
+fn remove_any(path: &Path) {
+    if path.is_dir() {
+        let _ = std::fs::remove_dir_all(path);
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// The app bundle Ferrum runs from on macOS (`…/Ferrum.app`).
+#[cfg(target_os = "macos")]
+fn app_bundle() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = exe.parent().and_then(Path::parent).and_then(Path::parent).ok_or("not in an app bundle")?;
+    if bundle.extension().is_some_and(|e| e == "app") {
+        Ok(bundle.to_path_buf())
+    } else {
+        Err("This copy of Ferrum isn't in an app bundle, so it can't update itself.".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn put_in_place(package: &Path, work: &Path) -> Result<PathBuf, String> {
+    use std::process::Command;
+    let bundle = app_bundle()?;
+    let parent = bundle.parent().ok_or("no folder")?;
+    let mount = work.join("mnt");
+    std::fs::create_dir_all(&mount).map_err(|e| e.to_string())?;
+    run(Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"]).arg(&mount).arg(package))?;
+    // Copy next to the current app, so the swap is a rename on the same disk.
+    let staged = parent.join(".Ferrum-update.app");
+    remove_any(&staged);
+    let copied = run(Command::new("ditto").arg(mount.join("Ferrum.app")).arg(&staged));
+    let _ = run(Command::new("hdiutil").args(["detach", "-quiet", "-force"]).arg(&mount));
+    copied.map_err(|e| if e.contains("ermission") { no_permission(std::io::ErrorKind::PermissionDenied.into(), parent) } else { e })?;
+    let old = parent.join(".Ferrum-old.app");
+    swap(&bundle, &staged, &old)?;
+    remove_any(&old);
+    Ok(bundle)
+}
+
+#[cfg(target_os = "windows")]
+fn put_in_place(package: &Path, work: &Path) -> Result<PathBuf, String> {
+    use std::process::Command;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let out = work.join("unpacked");
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    // tar.exe ships with Windows 10 and 11 and reads .zip files.
+    run(Command::new("tar").arg("-xf").arg(package).arg("-C").arg(&out))?;
+    let new = out.join("Ferrum").join("ferrum.exe");
+    if !new.is_file() {
+        return Err("The update package has no ferrum.exe".into());
+    }
+    let dir = exe.parent().ok_or("no folder")?;
+    let staged = dir.join("ferrum.new.exe");
+    std::fs::copy(&new, &staged).map_err(|e| no_permission(e, dir))?;
+    // A running .exe can be renamed but not deleted; the old one is removed at the next start.
+    swap(&exe, &staged, &dir.join("ferrum.old.exe"))?;
+    Ok(exe)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn put_in_place(package: &Path, work: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let out = work.join("unpacked");
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    run(Command::new("tar").arg("-xzf").arg(package).arg("-C").arg(&out))?;
+    let new = out.join("ferrum").join("ferrum");
+    if !new.is_file() {
+        return Err("The update package has no ferrum program".into());
+    }
+    let dir = exe.parent().ok_or("no folder")?;
+    let staged = dir.join(".ferrum.new");
+    std::fs::copy(&new, &staged).map_err(|e| no_permission(e, dir))?;
+    let _ = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755));
+    let old = dir.join(".ferrum.old");
+    swap(&exe, &staged, &old)?;
+    remove_any(&old);
+    Ok(exe)
+}
+
+/// Start `program` once this process has quit.
+pub fn relaunch_after_exit(program: &Path) -> Result<(), String> {
+    let pid = std::process::id();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; open \"$0\""))
+        .arg(program)
+        .spawn();
+    #[cfg(target_os = "windows")]
+    let result = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command"])
+            .arg(format!("Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Process -FilePath '{}'", program.display().to_string().replace('\'', "''")))
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; exec \"$0\" >/dev/null 2>&1"))
+        .arg(program)
+        .spawn();
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Remove what an earlier update left behind (Windows can't delete a running .exe).
+pub fn clean_up_after_update() {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in ["ferrum.old.exe", "ferrum.new.exe", ".ferrum.old", ".ferrum.new"] {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
+        }
+    }
+}
+
 fn fetch() -> Result<serde_json::Value, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(crate::tls_config())
         .timeout_global(Some(Duration::from_secs(20)))
         .build()
         .into();
@@ -94,6 +343,19 @@ mod tests {
             r#"[{"tag_name":"v0.4.0","html_url":"a"},{"tag_name":"v0.10.1","html_url":"b"},{"tag_name":"nightly","html_url":"c"},{"tag_name":"v0.9.0","html_url":"d","draft":true}]"#,
         )
         .unwrap();
-        assert_eq!(newest(&json), Some(("0.10.1".into(), "b".into())));
+        assert_eq!(newest(&json).map(|(v, u, _)| (v, u)), Some(("0.10.1".into(), "b".into())));
+    }
+
+    #[test]
+    fn finds_this_computers_package() {
+        let Some(suffix) = package_suffix() else { return };
+        let json: serde_json::Value = serde_json::json!([{
+            "tag_name": "v1.0.0", "html_url": "p",
+            "assets": [
+                {"name": "ferrum-1.0.0-something-else.bin", "browser_download_url": "x"},
+                {"name": format!("ferrum-1.0.0-{suffix}"), "browser_download_url": "right"}
+            ]
+        }]);
+        assert_eq!(newest(&json).and_then(|(.., a)| a), Some("right".into()));
     }
 }
