@@ -226,6 +226,8 @@ pub struct Settings {
     /// Unload tabs that haven't been used for a while (they reload when selected).
     pub sleep_tabs: bool,
     pub sleep_minutes: u32,
+    /// Keep the last closed tab loaded for two minutes, so reopening it is instant.
+    pub keep_closed_tab: bool,
     pub reader_font_size: f32,
     pub reader_theme: ReaderTheme,
     pub reader_width: f32,
@@ -361,6 +363,7 @@ impl Default for Settings {
             resume_once: false,
             sleep_tabs: true,
             sleep_minutes: 30,
+            keep_closed_tab: true,
             reader_font_size: 19.0,
             reader_theme: ReaderTheme::Auto,
             reader_width: 720.0,

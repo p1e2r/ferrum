@@ -48,7 +48,7 @@ x11-dl = "2.21"
 objc2 = "0.6.4"
 block2 = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSError"] }
-objc2-web-kit = { version = "0.3.2", features = ["block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController"] }
+objc2-web-kit = { version = "0.3.2", features = ["block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKNavigation"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com = "0.39"

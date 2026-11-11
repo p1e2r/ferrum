@@ -834,9 +834,16 @@ impl Browser {
                     if show_forward && icon_button(ui, Icon::Forward, button, can_forward, "Forward (Alt+→)").clicked() {
                         self.go_forward();
                     }
-                    let (icon, tip) = if loading { (Icon::Stop, "Stop loading") } else { (Icon::Reload, "Reload (Ctrl+R)") };
+                    let hard = if cfg!(target_os = "macos") { "Reload (⌘R)\nShift-click or ⌘⇧R: reload without the cache" } else { "Reload (Ctrl+R)\nShift-click or Ctrl+Shift+R: reload without the cache" };
+                    let (icon, tip) = if loading { (Icon::Stop, "Stop loading") } else { (Icon::Reload, hard) };
                     if show_reload && icon_button(ui, icon, button, has_page, tip).clicked() {
-                        if loading { self.stop() } else { self.reload() }
+                        if loading {
+                            self.stop()
+                        } else if ui.input(|i| i.modifiers.shift) {
+                            self.hard_reload()
+                        } else {
+                            self.reload()
+                        }
                     }
                     if show_home && icon_button(ui, Icon::Home, button, true, "Home").clicked() {
                         self.go_home();

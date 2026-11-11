@@ -143,6 +143,7 @@ enum Setting {
     BlockerExceptions,
     SitePermissions,
     SleepTabs,
+    KeepClosedTab,
     BookmarkFile,
     ImportBrowser,
     CheckUpdates,
@@ -186,6 +187,7 @@ const ITEMS: &[Item] = &[
     item(S::Tabs, T::ReaderButton, "Reader mode button", "In the address bar.", "toolbar reader", false),
     item(S::Tabs, T::LoadingBar, "Loading bar", "The line under the toolbar while a page loads.", "progress loading indicator", false),
     item(S::Tabs, T::DomainOnly, "Show only the site name in the address bar", "The full address appears when you click it.", "url domain host simplified full address", false),
+    item(S::Tabs, T::KeepClosedTab, "Instant reopen of closed tabs", "The last tab you closed stays loaded for two minutes, so Ctrl+Shift+T brings it back instantly, where you left it.", "reopen closed tab undo cache fast memory", false),
     item(S::Tabs, T::SleepTabs, "Sleeping tabs", "Unload tabs you haven't used for a while to save memory and battery. They reload when you select them. Pinned tabs and tabs playing sound stay awake.", "memory performance discard suspend battery", false),
     item(S::Tabs, T::BookmarksBar, "Bookmarks bar", "Show your bookmarks under the toolbar. Ctrl+Shift+B.", "favourites favorites", false),
     item(S::Tabs, T::HomeButton, "Home button", "", "toolbar", false),
@@ -480,6 +482,9 @@ impl Browser {
                 &mut s.tab_close_buttons,
                 &[(CloseButtons::Active, "Current tab"), (CloseButtons::Hover, "On hover"), (CloseButtons::All, "All tabs")],
             ),
+            Setting::KeepClosedTab => {
+                toggle(ui, &mut s.keep_closed_tab, accent);
+            },
             Setting::NewTabPosition => {
                 toggle(ui, &mut s.new_tab_next_to_current, accent);
             },

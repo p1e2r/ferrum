@@ -36,6 +36,8 @@ use crate::updates::UpdateStatus;
 pub const APP_NAME: &str = "Ferrum";
 const SAFARI_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
 const ZOOM_STEPS: [f32; 13] = [0.3, 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+/// How long a closed tab stays loaded for an instant reopen.
+const PARK_TIME: Duration = Duration::from_secs(120);
 const SLEEP_CHECK: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
@@ -243,6 +245,8 @@ pub struct Browser {
     pub(crate) active: usize,
     next_tab_id: u64,
     closed_tabs: Vec<String>,
+    /// The last closed tab, still loaded (hidden) for a while so reopening it is instant.
+    parked: Option<(Tab, Instant)>,
 
     // Address bar
     pub(crate) location: String,
@@ -400,6 +404,7 @@ impl Browser {
             active: 0,
             next_tab_id: 1,
             closed_tabs: Vec::new(),
+            parked: None,
             location: String::new(),
             editing: false,
             focus_location: false,
@@ -576,6 +581,7 @@ impl Browser {
         match builder.build_as_child(&*self.window) {
             Ok(webview) => {
                 crate::adblock::attach(&webview);
+                crate::engine_ext::tune(&webview);
                 #[cfg(target_os = "windows")]
                 if let Some(dark) = self.page_dark {
                     use wry::WebViewExtWindows;
@@ -693,7 +699,7 @@ impl Browser {
                 self.closed_tabs.remove(0);
             }
         }
-        drop(tab);
+        self.park(tab);
         if self.tabs.is_empty() {
             if self.profile.settings.close_window_with_last_tab {
                 // Nothing to restore next time but the closed tab.
@@ -736,10 +742,36 @@ impl Browser {
         }
     }
 
-    fn reopen_closed_tab(&mut self) {
-        if let Some(url) = self.closed_tabs.pop().and_then(|u| Url::parse(&u).ok()) {
-            self.open_tab(Some(url));
+    /// Keep a closed tab's page loaded but hidden and silent for a while, so
+    /// reopening it (Ctrl+Shift+T) is instant, scroll position and all.
+    fn park(&mut self, tab: Tab) {
+        self.parked = None;
+        if !self.profile.settings.keep_closed_tab || tab.url().is_none() {
+            return;
         }
+        let Some(webview) = &tab.webview else { return };
+        let _ = webview.set_visible(false);
+        let _ = webview.evaluate_script("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})");
+        self.parked = Some((tab, Instant::now()));
+    }
+
+    /// Let go of a parked tab after two minutes.
+    fn expire_parked(&mut self) {
+        if self.parked.as_ref().is_some_and(|(_, since)| since.elapsed() > PARK_TIME) {
+            self.parked = None;
+        }
+    }
+
+    fn reopen_closed_tab(&mut self) {
+        let Some(url) = self.closed_tabs.pop().and_then(|u| Url::parse(&u).ok()) else { return };
+        self.expire_parked();
+        if let Some((tab, _)) = self.parked.take_if(|(t, _)| t.url().as_ref() == Some(&url)) {
+            let at = (self.active + 1).min(self.tabs.len());
+            self.tabs.insert(at, tab);
+            self.activate(at);
+            return;
+        }
+        self.open_tab(Some(url));
     }
 
     pub(crate) fn active_tab(&self) -> &Tab {
@@ -852,6 +884,14 @@ impl Browser {
     pub(crate) fn reload(&mut self) {
         if let Some(w) = self.active_webview() {
             let _ = w.reload();
+        }
+    }
+
+    /// Reload without the cache: everything is fetched again from the site.
+    pub(crate) fn hard_reload(&mut self) {
+        if let Some(w) = self.active_webview() {
+            crate::engine_ext::hard_reload(w);
+            self.toast("Reloading without the cache");
         }
     }
 
@@ -974,6 +1014,7 @@ impl Browser {
     /// Handle what the engine and background threads reported.
     pub fn pump(&mut self) {
         self.finish_update();
+        self.expire_parked();
         let events: Vec<Event> = std::mem::take(&mut *self.events.borrow_mut());
         for event in events {
             match event {
@@ -1341,7 +1382,9 @@ impl Browser {
             "m" if cmd && !cfg!(target_os = "macos") => self.toggle_mute(self.active),
             "/" if cmd => self.open_internal(InternalPage::Shortcuts),
             "F6" => self.focus_location = true,
+            "r" if cmd && s.shift => self.hard_reload(),
             "r" if cmd => self.reload(),
+            "F5" if s.shift || s.ctrl => self.hard_reload(),
             "F5" => self.reload(),
             "d" if cmd => self.toggle_bookmark(),
             "b" if cmd && shift => {

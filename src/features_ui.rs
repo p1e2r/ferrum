@@ -12,7 +12,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     ("Tabs and windows", &[
         ("Ctrl+T", "New tab"),
         ("Ctrl+W", "Close tab"),
-        ("Ctrl+Shift+T", "Reopen closed tab"),
+        ("Ctrl+Shift+T", "Reopen closed tab (instant for 2 minutes)"),
         ("Ctrl+Shift+N", "New private window"),
         ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
         ("Ctrl+1 … Ctrl+8, Ctrl+9", "Go to tab 1–8, last tab"),
@@ -23,6 +23,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         ("Ctrl+L, F6", "Address bar"),
         ("Alt+Left / Alt+Right", "Back / forward"),
         ("Ctrl+R, F5", "Reload"),
+        ("Ctrl+Shift+R, Shift+F5, Shift-click ⟳", "Reload without the cache"),
         ("Esc", "Close menus and popups, leave full screen"),
     ]),
     ("Page", &[

@@ -48,6 +48,10 @@ On Windows release builds `windows_subsystem = "windows"` hides the console wind
 
 `OverlayKind` (Menu, Suggestions, SiteInfo, TabMenu, Toast, Notification, SearchBlocked, Permission) and `Overlays` (`sync`, `draw`, `handle_event`, `destroy`). `overlay_ui.rs` has `Browser::request_popups` and `draw_overlay` plus one `…_contents` function per popup. See [Pages and popups](Pages-and-Popups).
 
+## `engine_ext.rs` — engine features wry doesn't expose
+
+`hard_reload` reloads without the cache (WebKit `reloadFromOrigin`, WebKitGTK `reload_bypass_cache`, WebView2 DevTools `Page.reload` with `ignoreCache`). `tune` sets WebKitGTK's cache model to *web browser* and enables its back/forward page cache and DNS prefetching; the other engines do this by default. Each engine keeps a persistent disk cache in the profile (WebKit on macOS in its own store). The last closed tab stays loaded, hidden, for two minutes (`Browser::park`), so reopening it is instant.
+
 ## `pagescript.rs`, `adblock.rs`, `notify.rs`
 
 `pagescript::script` builds the script added to every page; `mute` returns the script that mutes or unmutes a page's media. `adblock::rules_json` builds the rule list; `prepare` / `attach` install it in each platform's engine. `notify::system_notification` shows a desktop notification. See [Page script](Page-Script).

@@ -18,6 +18,7 @@ mod browser;
 mod browser_import;
 mod devtools;
 mod downloads;
+mod engine_ext;
 mod features_ui;
 mod find;
 mod gl;
