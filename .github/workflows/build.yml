@@ -100,8 +100,8 @@ jobs:
             dist/*.zip
             dist/*.tar.gz
 
-  # Until Ferrum is ready for production, EVERY build is published as a
-  # versioned nightly pre-release (x.x.x):
+  # EVERY build is published as a versioned nightly release (x.x.x), marked
+  # as GitHub's "Latest" release:
   #   push to main → the version in Cargo.toml; if that version is already
   #                  released, the next free patch number (0.4.1 → 0.4.2 → …)
   #   version tag  → that version
@@ -136,7 +136,7 @@ jobs:
           done
           echo "version=$major.$minor.$patch" >> "$GITHUB_OUTPUT"
 
-      - name: Publish nightly pre-release
+      - name: Publish the release (marked as latest)
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -146,11 +146,13 @@ jobs:
             echo "Nothing built, nothing to publish"
             exit 0
           fi
-          args=(--prerelease --latest=false --title "Ferrum $VERSION (nightly)")
+          # A full release, so GitHub marks the newest one "Latest" and
+          # /releases/latest points at it.
+          args=(--latest --title "Ferrum $VERSION (nightly)")
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             args+=(--verify-tag --generate-notes)
           else
-            args+=(--target "$GITHUB_SHA" --notes "Nightly pre-release — not ready for production, may contain bugs.
+            args+=(--target "$GITHUB_SHA" --notes "Nightly build — not ready for production yet, may contain bugs. Ferrum 0.7.8 and later can update to it from the ☰ menu.
 
           Built from commit $GITHUB_SHA.")
           fi

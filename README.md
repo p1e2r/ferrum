@@ -67,7 +67,7 @@ Light browsing works on old hardware; heavy web apps and video sites need more. 
 
 ## Download
 
-Every push to `main` publishes a **Nightly** pre-release with builds for macOS, Windows and Linux on the [Releases](../../releases) page. All releases are pre-releases for now — expect bugs.
+Every push to `main` publishes a versioned nightly release with builds for macOS, Windows and Linux on the [Releases](../../releases) page; the newest is always marked **Latest** ([direct link](../../releases/latest)). Nightlies may still have bugs. Ferrum 0.7.8 and later update themselves in one click from the ☰ menu.
 
 ## Build
 
@@ -94,7 +94,7 @@ scripts/build.sh windows   # x86_64 .zip, cross-compiled with cargo-xwin
 scripts/build.sh all
 ```
 
-Results land in `dist/`. GitHub Actions builds all platforms natively on every push and publishes a nightly pre-release.
+Results land in `dist/`. GitHub Actions builds all platforms natively on every push and publishes a nightly release, marked as the latest.
 
 ## Keyboard shortcuts
 

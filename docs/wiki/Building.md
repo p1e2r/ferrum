@@ -53,14 +53,14 @@ On every push to `main` and every pull request, GitHub Actions builds and tests 
 
 ### Releases
 
-Every release is a **pre-release** until Ferrum is ready for production:
+Every build is published as a versioned nightly release, and the newest is marked **Latest** (so `releases/latest` always points at it, and Ferrum's update check finds it):
 
-- **Every push to `main`** replaces the **Nightly** pre-release (tag `nightly`) with fresh builds for all platforms.
-- **Pushing a version tag** publishes a pre-release for that version:
+- **Every push to `main`** publishes the next version (`Cargo.toml`'s version, or the next free patch number).
+- **Pushing a version tag** publishes that version:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.8.0
+git push origin v0.8.0
 ```
 
 Pull requests are built and tested but publish nothing.
