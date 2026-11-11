@@ -368,9 +368,16 @@ impl Profile {
             profile.bookmarks = vec![
                 Bookmark { title: "Wikipedia".into(), url: "https://en.wikipedia.org/".into() },
                 Bookmark { title: "Hacker News".into(), url: "https://news.ycombinator.com/".into() },
-                Bookmark { title: "Servo".into(), url: "https://servo.org/".into() },
+                Bookmark { title: "GitHub".into(), url: "https://github.com/".into() },
                 Bookmark { title: "crates.io".into(), url: "https://crates.io/".into() },
             ];
+        }
+        // Ferrum used to ship with a Servo bookmark; swap the untouched default for GitHub.
+        for b in &mut profile.bookmarks {
+            if b.title == "Servo" && b.url == "https://servo.org/" {
+                b.title = "GitHub".into();
+                b.url = "https://github.com/".into();
+            }
         }
         profile
     }
@@ -384,7 +391,7 @@ impl Profile {
         self.dir.is_none()
     }
 
-    /// Where Servo keeps cookies and site storage for this profile.
+    /// Where the web engine keeps cookies and site storage for this profile (Windows, Linux).
     pub fn engine_dir(&self) -> Option<PathBuf> {
         self.dir.as_ref().map(|d| d.join("engine"))
     }

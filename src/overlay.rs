@@ -122,9 +122,11 @@ impl Overlays {
             }
             overlay.rect = *rect;
             // Fit the window to its contents (measured last frame), up to the requested size.
+            // Until its contents have been measured the popup is a 1×1 window,
+            // so it never shows at the wrong size.
             let size = match overlay.content {
                 Some(c) => egui::vec2(rect.width(), c.y.min(rect.height()).max(8.0)),
-                None => rect.size(),
+                None => egui::vec2(1.0 / ppp, 1.0 / ppp),
             };
             let origin = window_origin(parent);
             let placed = (
@@ -141,8 +143,10 @@ impl Overlays {
                 gl_window.resize_surface(&overlay.surface, physical);
             }
             if overlay.content.is_some() && !overlay.visible {
+                // Showing happens by resizing from 1×1, not set_visible: on macOS
+                // that would make the popup the key window and take the
+                // keyboard from the address bar.
                 overlay.visible = true;
-                overlay.window.set_visible(true);
                 gl_window.window.request_redraw();
             }
         }
@@ -232,10 +236,9 @@ fn create(
         .with_decorations(false)
         .with_resizable(false)
         .with_active(false)
-        .with_visible(false)
         .with_window_level(WindowLevel::Normal)
         .with_position(winit::dpi::PhysicalPosition::new(origin.0 + (rect.left() * ppp) as i32, origin.1 + (rect.top() * ppp) as i32))
-        .with_inner_size(winit::dpi::PhysicalSize::new((rect.width() * ppp).max(1.0) as u32, (rect.height() * ppp).max(1.0) as u32));
+        .with_inner_size(winit::dpi::PhysicalSize::new(1, 1));
     // SAFETY: the parent window outlives its popups (they're closed first).
     let attributes = unsafe { attributes.with_parent_window(Some(parent_handle)) };
     let (window, surface) = gl_window.create_popup(event_loop, attributes)?;

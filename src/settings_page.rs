@@ -13,6 +13,15 @@ use url::Url;
 
 use crate::updates::UpdateStatus;
 
+/// The web engine pages are shown with on this platform.
+const ENGINE_NAME: &str = if cfg!(target_os = "macos") {
+    "WebKit (Safari)"
+} else if cfg!(target_os = "windows") {
+    "WebView2 (Edge / Chromium)"
+} else {
+    "WebKitGTK"
+};
+
 use crate::browser::{APP_NAME, Browser};
 use crate::profile::{DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, ThemeChoice};
 use crate::theme::{ThemePreset, mix};
@@ -184,7 +193,7 @@ const ITEMS: &[Item] = &[
     item(S::Advanced, T::BookmarkFile, "Import or export bookmarks", "Bookmark files (HTML) from Firefox, Chrome, Edge and Safari can be imported, and exported files open in any of them.", "import export html backup migrate move", false),
     item(S::Advanced, T::CheckUpdates, "Check for updates", "Look for a newer Ferrum on GitHub once a day.", "update upgrade new version release", false),
     item(S::Advanced, T::ResetAll, "Reset all settings", "Bookmarks, history and cookies are kept.", "defaults restore factory", false),
-    item(S::About, T::About, "", "", "version licence license servo engine github bug report", true),
+    item(S::About, T::About, "", "", "version licence license engine webkit webview2 github bug report", true),
 ];
 
 const ACCENTS: [[u8; 3]; 9] = [
@@ -782,7 +791,7 @@ impl Browser {
                 if check {
                     self.check_for_updates();
                 }
-                ui.label(RichText::new("Servo engine · MIT licence").weak());
+                ui.label(RichText::new(format!("{} engine · MIT licence", ENGINE_NAME)).weak());
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Source code").clicked() {
