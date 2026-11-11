@@ -49,3 +49,4 @@ opt-level = 2
 # Fixes for engine bugs not yet released upstream. See patches/README.md.
 [patch.crates-io]
 servo-script = { path = "patches/servo-script" }
+servo-paint = { path = "patches/servo-paint" }

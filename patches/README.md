@@ -7,5 +7,7 @@ released upstream. Each change is marked with a `FERRUM PATCH` comment.
 |---|---|---|
 | `servo-script` | 0.8.0 | `dom/webgl/vertexarrayobject.rs`: `Drop` for `VertexArrayObject` no longer touches buffers that the garbage collector may already have freed. Without this, closing or reloading a tab that used WebGL 2 (three.js and most 3D sites) aborted the whole browser. |
 
+| `servo-paint` | 0.8.0 | `webrender_external_images.rs`: unlocking a WebGL frame whose context was just destroyed (the tab closed mid-frame) no longer panics. |
+
 To update Servo, delete the copy, bump the version in `Cargo.toml`, and only
 re-apply a patch if the bug is still there.

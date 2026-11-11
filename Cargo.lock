@@ -7665,8 +7665,6 @@ dependencies = [
 [[package]]
 name = "servo-paint"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06e4bddf028b69849fe310dfcbdc2707d0eaef1cdc49e48adad60bdffdcc703c"
 dependencies = [
  "bitflags 2.13.2",
  "crossbeam-channel",
