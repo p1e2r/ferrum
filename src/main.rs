@@ -12,17 +12,23 @@
 // No console window on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod blocker;
+mod bookmarks_io;
 mod browser;
+mod devtools;
 mod downloads;
+mod features_ui;
 mod find;
 mod icons;
 mod keys;
 mod location;
 mod print;
 mod profile;
+mod reader;
 mod settings_page;
 mod theme;
 mod ui;
+mod updates;
 
 use std::error::Error;
 

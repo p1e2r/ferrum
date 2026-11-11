@@ -11,7 +11,8 @@ use std::time::Instant;
 use egui_glow::EguiGlow;
 use euclid::Scale;
 use servo::{
-    AuthenticationRequest, ColorPicker, ContextMenu, CookieSource, CreateNewWebViewRequest,
+    AllowOrDenyRequest, AuthenticationRequest, ConsoleLogLevel, MediaSessionEvent,
+    MediaSessionPlaybackState, Notification, WebResourceLoad, WebResourceResponse, ColorPicker, ContextMenu, CookieSource, CreateNewWebViewRequest,
     Cursor, DevicePoint, EmbedderControl, EmbedderControlId, EventLoopWaker, FilePicker,
     InputEvent, LoadStatus, MouseButton as ServoMouseButton, MouseButtonAction, MouseButtonEvent,
     MouseLeftViewportEvent, MouseMoveEvent, NavigationRequest, OffscreenRenderingContext, Opts,
@@ -27,14 +28,19 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{CursorIcon, Fullscreen, Window};
 
 use crate::WakeUp;
+use crate::blocker::{Blocker, base_domain};
+use crate::devtools::{Console, DevTools, Level, Source};
+use crate::reader::ReaderDoc;
+use crate::updates::UpdateStatus;
 use crate::downloads::{Downloads, looks_like_download};
 use crate::find::FindState;
 use crate::print::{self, PrintJob};
 use crate::keys::keyboard_event;
 use crate::location::input_to_url;
-use crate::profile::{NewTabPage, Profile};
+use crate::profile::{NewTabPage, Profile, SavedTab};
 
 pub const APP_NAME: &str = "Ferrum";
+const SLEEP_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
 const ZOOM_STEPS: [f32; 13] = [0.3, 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 
 // ---------------------------------------------------------------------------
@@ -49,6 +55,8 @@ pub enum PageControl {
     Select(SelectElement),
     Color { picker: ColorPicker, color: egui::Color32 },
     ContextMenu(ContextMenu),
+    /// "Leave this page?" from a page's `beforeunload` handler.
+    Unload(AllowOrDenyRequest),
 }
 
 pub struct Pending {
@@ -69,6 +77,10 @@ enum Event {
     Title(WebView),
     Favicon(WebViewId),
     Download(Url, Option<Url>),
+    Console(WebViewId, ConsoleLogLevel, String),
+    Notify(Option<WebViewId>, String, String),
+    Media(WebViewId, bool),
+    LoadStarted(WebViewId),
 }
 
 /// Receives callbacks from Servo for every webview. Callbacks only queue work
@@ -77,6 +89,7 @@ struct Delegate {
     window: Rc<Window>,
     rendering_context: Rc<OffscreenRenderingContext>,
     events: RefCell<Vec<Event>>,
+    blocker: Rc<Blocker>,
 }
 
 impl Delegate {
@@ -104,6 +117,9 @@ impl WebViewDelegate for Delegate {
     fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
         if status == LoadStatus::Complete {
             self.push(Event::Loaded(webview));
+        } else if status == LoadStatus::Started {
+            self.blocker.reset_count(webview.id());
+            self.push(Event::LoadStarted(webview.id()));
         } else {
             self.window.request_redraw();
         }
@@ -198,6 +214,67 @@ impl WebViewDelegate for Delegate {
     fn hide_embedder_control(&self, _: WebView, id: EmbedderControlId) {
         self.push(Event::HideControl(id));
     }
+
+    /// Ad and tracker blocking: cancel requests to listed servers from other sites.
+    fn load_web_resource(&self, webview: WebView, load: WebResourceLoad) {
+        let request = load.request();
+        if request.is_for_main_frame {
+            return;
+        }
+        let host = request.url.host_str().unwrap_or("").to_ascii_lowercase();
+        let page = webview.url();
+        let page_host = page.as_ref().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
+        if self.blocker.should_block(&host, &page_host) {
+            let url = request.url.clone().into_url();
+            self.blocker.count_blocked(webview.id(), page.as_ref().map_or("", |u| u.as_str()), url.as_str());
+            load.intercept(WebResourceResponse::new(url)).cancel();
+        }
+    }
+
+    fn show_console_message(&self, webview: WebView, level: ConsoleLogLevel, message: String) {
+        self.push(Event::Console(webview.id(), level, message));
+    }
+
+    fn show_notification(&self, webview: WebView, notification: Notification) {
+        log::debug!("Notification from a page: {}", notification.title);
+        self.push(Event::Notify(Some(webview.id()), notification.title, notification.body));
+    }
+
+    fn notify_media_session_event(&self, webview: WebView, event: MediaSessionEvent) {
+        if let MediaSessionEvent::PlaybackStateChange(state) = event {
+            self.push(Event::Media(webview.id(), matches!(state, MediaSessionPlaybackState::Playing)));
+        }
+    }
+
+    fn request_unload(&self, webview: WebView, request: AllowOrDenyRequest) {
+        self.push(Event::Control(Pending { webview: webview.id(), id: None, control: PageControl::Unload(request) }));
+    }
+}
+
+/// Engine-wide callbacks. Some loads (images from the image cache, workers)
+/// aren't tied to a tab; they're blocked using the page that referred them.
+struct EngineDelegate {
+    blocker: Rc<Blocker>,
+    tabs: Rc<Delegate>,
+}
+
+impl servo::ServoDelegate for EngineDelegate {
+    fn load_web_resource(&self, load: WebResourceLoad) {
+        let request = load.request();
+        if request.is_for_main_frame {
+            return;
+        }
+        let Some(page_host) = request.referrer_url.as_ref().and_then(|u| u.host_str().map(str::to_ascii_lowercase)) else { return };
+        let host = request.url.host_str().unwrap_or("").to_ascii_lowercase();
+        if self.blocker.should_block(&host, &page_host) {
+            let url = request.url.clone().into_url();
+            load.intercept(WebResourceResponse::new(url)).cancel();
+        }
+    }
+
+    fn show_notification(&self, notification: Notification) {
+        self.tabs.push(Event::Notify(None, notification.title, notification.body));
+    }
 }
 
 fn set_cursor(window: &Window, cursor: Cursor) {
@@ -243,16 +320,22 @@ fn set_cursor(window: &Window, cursor: Cursor) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InternalPage {
     Settings,
+    Shortcuts,
+    /// A page's HTML source (the text is in `Tab::source`).
+    Source,
 }
 
 impl InternalPage {
     pub const SETTINGS_URL: &'static str = "ferrum://settings";
+    pub const SHORTCUTS_URL: &'static str = "ferrum://shortcuts";
 
-    /// `ferrum://settings`, or the `about:settings` / `about:preferences` aliases.
+    /// `ferrum://settings`, `ferrum://shortcuts`, or the `about:` aliases.
     pub fn from_url(url: &Url) -> Option<Self> {
         match (url.scheme(), url.host_str().unwrap_or(""), url.path()) {
             ("ferrum", "settings", _) => Some(InternalPage::Settings),
+            ("ferrum", "shortcuts", _) => Some(InternalPage::Shortcuts),
             ("about", _, "settings" | "preferences") => Some(InternalPage::Settings),
+            ("about", _, "shortcuts" | "keyboard") => Some(InternalPage::Shortcuts),
             _ => None,
         }
     }
@@ -260,12 +343,16 @@ impl InternalPage {
     pub fn url(self) -> Url {
         match self {
             InternalPage::Settings => Url::parse(Self::SETTINGS_URL).expect("valid URL"),
+            InternalPage::Shortcuts => Url::parse(Self::SHORTCUTS_URL).expect("valid URL"),
+            InternalPage::Source => Url::parse("view-source:about:blank").expect("valid URL"),
         }
     }
 
     pub fn title(self) -> &'static str {
         match self {
             InternalPage::Settings => "Settings",
+            InternalPage::Shortcuts => "Keyboard shortcuts",
+            InternalPage::Source => "Page source",
         }
     }
 }
@@ -288,6 +375,17 @@ pub struct Tab {
     pub pending: Option<(Url, String)>,
     /// A page drawn by Ferrum, such as settings.
     pub internal: Option<InternalPage>,
+    /// Pinned tabs stay at the left, show only their icon, and are kept by "close others".
+    pub pinned: bool,
+    pub muted: bool,
+    /// The page is playing audio or video.
+    pub playing: bool,
+    pub console: Console,
+    /// Reader mode, when on: the article extracted from the page.
+    pub reader: Option<ReaderDoc>,
+    /// For a page-source tab.
+    pub source: Option<Source>,
+    pub last_used: Instant,
 }
 
 impl Tab {
@@ -302,6 +400,13 @@ impl Tab {
             retries_left: 1,
             pending: None,
             internal: None,
+            pinned: false,
+            muted: false,
+            playing: false,
+            console: Console::default(),
+            reader: None,
+            source: None,
+            last_used: Instant::now(),
         }
     }
 
@@ -310,6 +415,9 @@ impl Tab {
     }
 
     pub fn title(&self) -> String {
+        if let Some(source) = &self.source {
+            return format!("Source: {}", source.url.trim_start_matches("https://").trim_start_matches("http://"));
+        }
         if let Some(page) = self.internal {
             return page.title().to_string();
         }
@@ -327,6 +435,9 @@ impl Tab {
     }
 
     pub fn url(&self) -> Option<Url> {
+        if let Some(source) = &self.source {
+            return Url::parse(&format!("view-source:{}", source.url)).ok();
+        }
         if let Some(page) = self.internal {
             return Some(page.url());
         }
@@ -397,6 +508,22 @@ pub struct Browser {
     engine_applied: Vec<(&'static str, servo::PrefValue)>,
     pub(crate) settings_section: crate::settings_page::Section,
     pub(crate) settings_query: String,
+    pub(crate) blocker: Rc<Blocker>,
+    pub(crate) devtools: DevTools,
+    pub(crate) update: Option<Arc<Mutex<UpdateStatus>>>,
+    /// The padlock / site information popup.
+    pub(crate) site_info_open: bool,
+    /// "Remember this decision" in permission prompts.
+    pub(crate) remember_permission: bool,
+    /// A web notification shown in the corner: (site, title, body, since).
+    pub(crate) notification: Option<(String, String, String, Instant)>,
+    proxy: EventLoopProxy<WakeUp>,
+    last_sleep_check: Instant,
+    pending_reader: Option<(WebViewId, Rc<RefCell<Option<Option<ReaderDoc>>>>)>,
+    pending_source: Option<Rc<RefCell<Option<(String, String)>>>>,
+    pending_screenshot: Option<Rc<RefCell<Option<Result<std::path::PathBuf, String>>>>>,
+    pub(crate) last_screenshot: Option<std::path::PathBuf>,
+    console_results: Rc<RefCell<Vec<(WebViewId, Level, String)>>>,
 
     // Page geometry (egui points) and input
     pub(crate) content_rect: egui::Rect,
@@ -497,11 +624,16 @@ impl Browser {
             });
         }
 
+        let blocker = Rc::new(Blocker::new(profile.settings.block_trackers, &profile.settings.blocker_exceptions));
+        // The full list is shared by private windows too; they just don't save anything else.
+        blocker.load_list_in_background(Profile::default_dir());
         let delegate = Rc::new(Delegate {
             window: window.clone(),
             rendering_context: page_context.clone(),
             events: Default::default(),
+            blocker: blocker.clone(),
         });
+        servo.set_delegate(Rc::new(EngineDelegate { blocker: blocker.clone(), tabs: delegate.clone() }));
 
         let notify_window = proxy.clone();
         let downloads = Downloads::new(std::sync::Arc::new(move || {
@@ -545,6 +677,19 @@ impl Browser {
             default_user_agent,
             settings_section: Default::default(),
             settings_query: String::new(),
+            blocker,
+            devtools: DevTools::default(),
+            update: None,
+            site_info_open: false,
+            remember_permission: true,
+            notification: None,
+            proxy,
+            last_sleep_check: Instant::now(),
+            pending_reader: None,
+            pending_source: None,
+            pending_screenshot: None,
+            last_screenshot: None,
+            console_results: Rc::default(),
             content_rect: egui::Rect::NOTHING,
             ppp: 1.0,
             mouse: None,
@@ -557,9 +702,11 @@ impl Browser {
             // Restored tabs stay unloaded until selected; only the active one loads now.
             let (saved, active) = browser.profile.load_session();
             let zoom = browser.profile.settings.default_zoom;
-            for (url, title) in saved {
-                if let Ok(url) = Url::parse(&url) {
-                    browser.tabs.push(Tab::restored(url, title, zoom));
+            for saved in saved {
+                if let Ok(url) = Url::parse(&saved.url) {
+                    let mut tab = Tab::restored(url, saved.title, zoom);
+                    tab.pinned = saved.pinned;
+                    browser.tabs.push(tab);
                 }
             }
             if !browser.tabs.is_empty() {
@@ -571,6 +718,7 @@ impl Browser {
         }
         browser.downloads.dir = browser.download_dir();
         crate::timing("tabs opened");
+        browser.maybe_check_for_updates();
         browser
     }
 
@@ -648,6 +796,10 @@ impl Browser {
                 self.tabs[self.active].webview = Some(webview);
             }
         }
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.last_used = Instant::now();
+        }
+        self.site_info_open = false;
         for (i, tab) in self.tabs.iter().enumerate() {
             if let Some(webview) = &tab.webview {
                 if i == self.active {
@@ -752,12 +904,16 @@ impl Browser {
             tab.webview = None;
             tab.crashed = None;
             tab.favicon = None;
+            tab.source = None;
+            tab.reader = None;
             tab.internal = Some(page);
             self.activate(self.active);
             return;
         }
         let tab = &mut self.tabs[self.active];
         tab.internal = None;
+        tab.source = None;
+        tab.reader = None;
         tab.crashed = None;
         tab.upgraded_to_https = false;
         tab.retries_left = 1;
@@ -923,14 +1079,18 @@ impl Browser {
         }
         // Start-page tabs have no URL and aren't saved, so count the active
         // tab's position among the saved ones.
-        let mut tabs: Vec<(String, String)> = Vec::new();
+        let mut tabs: Vec<SavedTab> = Vec::new();
         let mut active = 0;
         for (i, t) in self.tabs.iter().enumerate() {
             if i == self.active {
                 active = tabs.len();
             }
+            // Page-source tabs aren't kept: their text isn't saved.
+            if t.source.is_some() {
+                continue;
+            }
             if let Some(u) = t.url() {
-                tabs.push((u.to_string(), t.title()));
+                tabs.push(SavedTab { url: u.to_string(), title: t.title(), pinned: t.pinned });
             }
         }
         let active = active.min(tabs.len().saturating_sub(1));
@@ -958,7 +1118,7 @@ impl Browser {
                         self.close_tab(i);
                     }
                 },
-                Event::Control(pending) => self.controls.push(pending),
+                Event::Control(pending) => self.add_control(pending),
                 Event::HideControl(id) => self.controls.retain(|c| c.id != Some(id)),
                 Event::FilePicker(picker) => run_file_picker(picker),
                 Event::Crashed(id, reason) => {
@@ -986,6 +1146,9 @@ impl Browser {
                         let title = webview.page_title();
                         self.profile.record_visit(&url, title.as_deref());
                     }
+                    if self.tab_index(webview.id()).is_some_and(|i| self.tabs[i].muted) {
+                        webview.evaluate_javascript(mute_script(true), |_| {});
+                    }
                 },
                 Event::Title(webview) => {
                     if let (Some(url), Some(title)) = (webview.url(), webview.page_title()) {
@@ -998,8 +1161,41 @@ impl Browser {
                     }
                 },
                 Event::Download(url, referer) => self.start_download(url, referer),
+                Event::Console(id, level, message) => {
+                    if let Some(i) = self.tab_index(id) {
+                        self.tabs[i].console.push(level.into(), message);
+                    }
+                },
+                Event::Notify(id, title, body) => {
+                    let site = id.and_then(|id| self.tab_index(id)).and_then(|i| self.tabs[i].url()).and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
+                    self.notification = Some((site, title, body, Instant::now()));
+                },
+                Event::Media(id, playing) => {
+                    if let Some(i) = self.tab_index(id) {
+                        self.tabs[i].playing = playing;
+                    }
+                },
+                Event::LoadStarted(id) => {
+                    if let Some(i) = self.tab_index(id) {
+                        // A new page: reader mode and the playing indicator start over.
+                        self.tabs[i].reader = None;
+                        self.tabs[i].playing = false;
+                        self.tabs[i].console.clear();
+                    }
+                },
             }
         }
+        let results: Vec<_> = self.console_results.borrow_mut().drain(..).collect();
+        if !results.is_empty() {
+            self.window.request_redraw();
+        }
+        for (id, level, text) in results {
+            if let Some(i) = self.tab_index(id) {
+                self.tabs[i].console.push(level, text);
+            }
+        }
+        self.finish_async_work();
+        self.sleep_idle_tabs();
         if let Some(job) = &self.print_job {
             print::advance(job, &self.window);
         }
@@ -1097,6 +1293,14 @@ impl Browser {
                 return true;
             },
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            // Trackpad pinch: zoom the page like a phone does, around the pointer.
+            WindowEvent::PinchGesture { delta, .. } if delta.is_finite() => {
+                if let (Some(webview), Some(pos)) = (self.active_webview().cloned(), self.mouse.filter(|p| self.in_content(*p))) {
+                    webview.adjust_pinch_zoom(1.0 + *delta as f32, self.page_point(pos));
+                    self.window.request_redraw();
+                }
+                return true;
+            },
             _ => {},
         }
 
@@ -1139,6 +1343,14 @@ impl Browser {
             (_, "g") if cmd && self.find.open => self.find_step(if shift { -1 } else { 1 }),
             (Key::Named(NamedKey::F3), _) if self.find.open => self.find_step(if shift { -1 } else { 1 }),
             (_, "p") if cmd => self.start_print(),
+            (_, "s") if cmd && shift => self.take_screenshot(),
+            (_, "u") if cmd => self.view_source(),
+            (_, "r") if cmd && m.alt_key() => self.toggle_reader(),
+            (_, "i" | "j") if cmd && (shift || m.alt_key()) => self.toggle_devtools(),
+            (Key::Named(NamedKey::F12), _) => self.toggle_devtools(),
+            (Key::Named(NamedKey::F9), _) => self.toggle_reader(),
+            (_, "m") if cmd && !cfg!(target_os = "macos") => self.toggle_mute(self.active),
+            (_, "/") if cmd => self.open_internal(InternalPage::Shortcuts),
             (Key::Named(NamedKey::F6), _) => self.focus_location = true,
             (_, "r") if cmd => self.reload(),
             (Key::Named(NamedKey::F5), _) => self.reload(),
@@ -1161,6 +1373,8 @@ impl Browser {
             },
             (Key::Named(NamedKey::F11), _) => self.toggle_window_fullscreen(),
             (Key::Named(NamedKey::Escape), _) if self.print_job.is_some() => self.print_job = None,
+            (Key::Named(NamedKey::Escape), _) if self.site_info_open => self.site_info_open = false,
+            (Key::Named(NamedKey::Escape), _) if self.active_tab().reader.is_some() => self.toggle_reader(),
             (Key::Named(NamedKey::Escape), _) if self.find.open => self.close_find(),
             (Key::Named(NamedKey::Escape), _) if self.page_fullscreen => {
                 if let Some(w) = self.active_webview() {
@@ -1192,6 +1406,336 @@ impl Browser {
         true
     }
 
+    /// Queue a page request, answering permission requests at once when the
+    /// user asked Ferrum to remember the answer for that site.
+    fn add_control(&mut self, pending: Pending) {
+        if let PageControl::Permission(request) = &pending.control {
+            let host = self.tab_index(pending.webview).and_then(|i| self.tabs[i].url()).and_then(|u| u.host_str().map(str::to_owned));
+            let key = feature_key(request.feature());
+            let remembered = host.and_then(|h| self.profile.settings.site_permissions.get(&h)?.get(key).copied());
+            if let Some(allowed) = remembered {
+                let PageControl::Permission(request) = pending.control else { unreachable!() };
+                if allowed { request.allow() } else { request.deny() }
+                return;
+            }
+        }
+        self.controls.push(pending);
+    }
+
+    /// Remember a permission answer for the active tab's site.
+    pub(crate) fn remember_permission_answer(&mut self, feature: servo::PermissionFeature, allowed: bool) {
+        let Some(host) = self.active_tab().url().and_then(|u| u.host_str().map(str::to_owned)) else { return };
+        self.profile.settings.site_permissions.entry(host).or_default().insert(feature_key(feature).to_string(), allowed);
+        self.profile.mark_dirty();
+    }
+
+    /// Switch to an internal page's tab, opening one if needed.
+    pub(crate) fn open_internal(&mut self, page: InternalPage) {
+        self.menu_open = false;
+        if let Some(i) = self.tabs.iter().position(|t| t.internal == Some(page) && t.source.is_none()) {
+            self.activate(i);
+            return;
+        }
+        let mut tab = Tab::new(None, self.profile.settings.default_zoom);
+        tab.internal = Some(page);
+        self.tabs.insert(self.active + 1, tab);
+        self.activate(self.active + 1);
+    }
+
+    /// Turn reader mode on or off for the active tab.
+    pub(crate) fn toggle_reader(&mut self) {
+        self.menu_open = false;
+        let tab = &mut self.tabs[self.active];
+        if tab.reader.take().is_some() {
+            if let Some(w) = &tab.webview {
+                w.show();
+            }
+            return;
+        }
+        let Some(webview) = tab.webview.clone() else {
+            self.toast("Open an article to use reader mode");
+            return;
+        };
+        let id = webview.id();
+        let proxy = self.proxy.clone();
+        let result: Rc<RefCell<Option<Option<ReaderDoc>>>> = Rc::default();
+        let slot = result.clone();
+        webview.evaluate_javascript(crate::reader::SCRIPT, move |value| {
+            let doc = match value {
+                Ok(servo::JSValue::String(json)) => ReaderDoc::parse(&json),
+                _ => None,
+            };
+            *slot.borrow_mut() = Some(doc);
+            let _ = proxy.send_event(WakeUp);
+        });
+        self.pending_reader = Some((id, result));
+    }
+
+    /// Open the active page's HTML source in a new tab.
+    pub(crate) fn view_source(&mut self) {
+        self.menu_open = false;
+        let Some(webview) = self.active_webview().cloned() else {
+            self.toast("Open a page to view its source");
+            return;
+        };
+        let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
+        let proxy = self.proxy.clone();
+        let result: Rc<RefCell<Option<(String, String)>>> = Rc::default();
+        let slot = result.clone();
+        webview.evaluate_javascript(
+            "(document.doctype ? new XMLSerializer().serializeToString(document.doctype) + '\\n' : '') + document.documentElement.outerHTML",
+            move |value| {
+                let html = match value {
+                    Ok(servo::JSValue::String(s)) => s,
+                    Ok(other) => crate::devtools::format_value(&other),
+                    Err(e) => format!("Could not read the page source: {e:?}"),
+                };
+                *slot.borrow_mut() = Some((url, html));
+                let _ = proxy.send_event(WakeUp);
+            },
+        );
+        self.pending_source = Some(result);
+    }
+
+    /// Save a PNG of the visible page to the downloads folder.
+    pub(crate) fn take_screenshot(&mut self) {
+        self.menu_open = false;
+        let Some(webview) = self.active_webview().cloned() else {
+            self.toast("Open a page to take a screenshot");
+            return;
+        };
+        let dir = dirs::picture_dir().or_else(|| self.download_dir()).or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir);
+        let name = format!("Screenshot {}.png", chrono::Local::now().format("%Y-%m-%d at %H.%M.%S"));
+        let path = dir.join(name);
+        let proxy = self.proxy.clone();
+        let result: Rc<RefCell<Option<Result<std::path::PathBuf, String>>>> = Rc::default();
+        let slot = result.clone();
+        webview.take_screenshot(None, move |shot| {
+            let outcome = match shot {
+                Ok(image) => {
+                    let _ = std::fs::create_dir_all(&dir);
+                    image::DynamicImage::ImageRgba8(image).save(&path).map(|_| path).map_err(|e| e.to_string())
+                },
+                Err(e) => Err(format!("{e:?}")),
+            };
+            *slot.borrow_mut() = Some(outcome);
+            let _ = proxy.send_event(WakeUp);
+        });
+        self.pending_screenshot = Some(result);
+        self.toast("Taking screenshot…");
+    }
+
+    /// Pick up results of reader / source / screenshot requests.
+    fn finish_async_work(&mut self) {
+        if let Some((id, slot)) = &self.pending_reader {
+            let id = *id;
+            let done = slot.borrow_mut().take();
+            if let Some(doc) = done {
+                self.pending_reader = None;
+                match (doc, self.tab_index(id)) {
+                    (Some(doc), Some(i)) => {
+                        self.tabs[i].reader = Some(doc);
+                        self.window.request_redraw();
+                    },
+                    (None, Some(_)) => self.toast("Reader mode isn't available for this page"),
+                    _ => {},
+                }
+            }
+        }
+        if let Some(slot) = &self.pending_source {
+            let done = slot.borrow_mut().take();
+            if let Some((url, html)) = done {
+                self.pending_source = None;
+                let mut tab = Tab::new(None, 1.0);
+                tab.internal = Some(InternalPage::Source);
+                tab.source = Some(Source::new(url, &html));
+                self.tabs.insert(self.active + 1, tab);
+                self.activate(self.active + 1);
+            }
+        }
+        if let Some(slot) = &self.pending_screenshot {
+            let done = slot.borrow_mut().take();
+            if let Some(outcome) = done {
+                self.pending_screenshot = None;
+                match outcome {
+                    Ok(path) => {
+                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.toast(format!("Saved {name} to {}", path.parent().map(|p| p.display().to_string()).unwrap_or_default()));
+                        self.last_screenshot = Some(path);
+                    },
+                    Err(e) => self.toast(format!("Screenshot failed: {e}")),
+                }
+            }
+        }
+    }
+
+    pub(crate) fn toggle_devtools(&mut self) {
+        self.menu_open = false;
+        self.devtools.open = !self.devtools.open;
+        self.devtools.focus = self.devtools.open;
+    }
+
+    /// Run code typed into the console in the active page.
+    pub(crate) fn run_in_console(&mut self, code: String) {
+        let Some(webview) = self.active_webview().cloned() else { return };
+        let i = self.active;
+        self.tabs[i].console.push(Level::Input, code.clone());
+        let id = webview.id();
+        let proxy = self.proxy.clone();
+        let results = self.console_results.clone();
+        webview.evaluate_javascript(code, move |value| {
+            let (level, text) = match value {
+                Ok(v) => (Level::Result, crate::devtools::format_value(&v)),
+                Err(e) => (Level::Error, format!("{e:?}")),
+            };
+            results.borrow_mut().push((id, level, text));
+            let _ = proxy.send_event(WakeUp);
+        });
+    }
+
+    pub(crate) fn toggle_mute(&mut self, index: usize) {
+        let Some(tab) = self.tabs.get_mut(index) else { return };
+        tab.muted = !tab.muted;
+        if let Some(w) = &tab.webview {
+            w.evaluate_javascript(mute_script(tab.muted), |_| {});
+        }
+        let msg = if tab.muted { "Tab muted" } else { "Tab unmuted" };
+        self.toast(msg);
+    }
+
+    /// Pin or unpin a tab. Pinned tabs are kept together at the left.
+    pub(crate) fn toggle_pin(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        let pinned = !self.tabs[index].pinned;
+        self.tabs[index].pinned = pinned;
+        let pinned_count = self.tabs.iter().filter(|t| t.pinned).count();
+        let target = if pinned { pinned_count - 1 } else { pinned_count };
+        self.move_tab(index, target);
+        self.profile.mark_dirty();
+    }
+
+    /// Move a tab to a new position (drag and drop), keeping the same tab active.
+    pub(crate) fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() {
+            return;
+        }
+        let to = to.min(self.tabs.len() - 1);
+        if from == to {
+            return;
+        }
+        let active_tab = self.active;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = if active_tab == from {
+            to
+        } else if from < active_tab && to >= active_tab {
+            active_tab - 1
+        } else if from > active_tab && to <= active_tab {
+            active_tab + 1
+        } else {
+            active_tab
+        };
+        self.profile.mark_dirty();
+    }
+
+    /// Unload tabs that haven't been looked at for a while. They keep their
+    /// place, title and icon and load again when selected.
+    fn sleep_idle_tabs(&mut self) {
+        if self.last_sleep_check.elapsed() < SLEEP_CHECK {
+            return;
+        }
+        self.last_sleep_check = Instant::now();
+        if !self.profile.settings.sleep_tabs {
+            return;
+        }
+        let limit = std::time::Duration::from_secs(self.profile.settings.sleep_minutes.max(1) as u64 * 60);
+        for i in 0..self.tabs.len() {
+            let tab = &self.tabs[i];
+            let busy = tab.playing || tab.pinned || tab.loading() || self.controls.iter().any(|c| Some(c.webview) == tab.webview.as_ref().map(|w| w.id()));
+            if i == self.active || busy || tab.webview.is_none() || tab.last_used.elapsed() < limit {
+                continue;
+            }
+            let (Some(url), title) = (tab.url(), tab.title()) else { continue };
+            log::info!("Putting tab to sleep: {url}");
+            let tab = &mut self.tabs[i];
+            tab.webview = None;
+            tab.reader = None;
+            tab.pending = Some((url, title));
+        }
+    }
+
+    /// Check for a newer release at start-up, at most once a day.
+    fn maybe_check_for_updates(&mut self) {
+        let s = &self.profile.settings;
+        if !s.check_updates || self.profile.is_private() || crate::profile::now_secs().saturating_sub(s.last_update_check) < 24 * 3600 {
+            return;
+        }
+        self.check_for_updates();
+    }
+
+    pub(crate) fn check_for_updates(&mut self) {
+        self.profile.settings.last_update_check = crate::profile::now_secs();
+        self.profile.mark_dirty();
+        let proxy = self.proxy.clone();
+        self.update = Some(crate::updates::check(crate::VERSION, Arc::new(move || {
+            let _ = proxy.send_event(WakeUp);
+        })));
+    }
+
+    pub(crate) fn update_status(&self) -> Option<UpdateStatus> {
+        self.update.as_ref().and_then(|u| u.lock().ok().map(|s| s.clone()))
+    }
+
+    pub(crate) fn import_bookmarks(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("Bookmarks file", &["html", "htm"]).pick_file() else { return };
+        match std::fs::read_to_string(&path) {
+            Ok(html) => {
+                let items = crate::bookmarks_io::import(&html);
+                let added = self.profile.import_bookmarks(items);
+                self.toast(format!("Imported {added} bookmarks"));
+            },
+            Err(e) => self.toast(format!("Could not read the file: {e}")),
+        }
+    }
+
+    pub(crate) fn export_bookmarks(&mut self) {
+        let Some(path) = rfd::FileDialog::new().set_file_name("ferrum-bookmarks.html").add_filter("Bookmarks file", &["html"]).save_file() else { return };
+        match std::fs::write(&path, crate::bookmarks_io::export(&self.profile.bookmarks)) {
+            Ok(()) => self.toast(format!("Exported {} bookmarks", self.profile.bookmarks.len())),
+            Err(e) => self.toast(format!("Could not save: {e}")),
+        }
+    }
+
+    /// Switch tracker blocking off or on for the active tab's site, and reload it.
+    pub(crate) fn toggle_site_blocking(&mut self) {
+        let Some(host) = self.active_tab().url().and_then(|u| u.host_str().map(str::to_owned)) else { return };
+        let list = &mut self.profile.settings.blocker_exceptions;
+        if let Some(i) = list.iter().position(|h| *h == host) {
+            list.remove(i);
+        } else {
+            list.push(host);
+        }
+        self.profile.mark_dirty();
+        self.apply_engine_settings();
+        self.reload();
+    }
+
+    /// Delete cookies and storage for the active tab's site.
+    pub(crate) fn clear_this_site(&mut self) {
+        let Some(host) = self.active_tab().url().and_then(|u| u.host_str().map(str::to_owned)) else { return };
+        let base = base_domain(&host).to_string();
+        let manager = self.servo.site_data_manager();
+        let names: Vec<String> = manager.site_data(StorageType::all()).iter().map(|s| s.name()).filter(|n| base_domain(n) == base).collect();
+        let mut refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        refs.push(&base);
+        manager.clear_site_data(&refs, StorageType::all());
+        self.profile.settings.site_permissions.remove(&host);
+        self.profile.mark_dirty();
+        self.toast(format!("Cleared cookies and data for {base}"));
+    }
+
     /// Send changed engine settings to Servo. They apply to pages loaded afterwards.
     pub(crate) fn apply_engine_settings(&mut self) {
         let prefs = engine_prefs(&self.profile.settings, &self.default_user_agent);
@@ -1203,6 +1747,8 @@ impl Browser {
         }
         self.engine_applied = prefs;
         self.downloads.dir = self.download_dir();
+        self.blocker.enabled.set(self.profile.settings.block_trackers);
+        *self.blocker.exceptions.borrow_mut() = self.profile.settings.blocker_exceptions.iter().cloned().collect();
     }
 
     /// The folder downloads go to.
@@ -1213,15 +1759,7 @@ impl Browser {
 
     /// Switch to the settings tab, opening one if needed.
     pub(crate) fn open_settings(&mut self) {
-        self.menu_open = false;
-        if let Some(i) = self.tabs.iter().position(|t| t.internal == Some(InternalPage::Settings)) {
-            self.activate(i);
-            return;
-        }
-        let mut tab = Tab::new(None, self.profile.settings.default_zoom);
-        tab.internal = Some(InternalPage::Settings);
-        self.tabs.insert(self.active + 1, tab);
-        self.activate(self.active + 1);
+        self.open_internal(InternalPage::Settings);
     }
 
     pub(crate) fn toggle_panel(&mut self, panel: SidePanel) {
@@ -1404,7 +1942,9 @@ impl Browser {
     /// When the event loop must wake up next: a scheduled repaint or a pending save.
     pub fn next_wake(&mut self) -> Option<Instant> {
         self.save_if_due();
-        [self.next_repaint(), self.profile.flush_at()].into_iter().flatten().min()
+        self.sleep_idle_tabs();
+        let sleep_check = (self.profile.settings.sleep_tabs && self.tabs.len() > 1).then(|| self.last_sleep_check + SLEEP_CHECK);
+        [self.next_repaint(), self.profile.flush_at(), sleep_check].into_iter().flatten().min()
     }
 
     /// Called when the event loop is about to sleep: redraw now if a repaint is
@@ -1481,6 +2021,35 @@ pub(crate) fn engine_prefs(settings: &crate::profile::Settings, default_user_age
         ("fonts_default_size", Int(settings.font_size.clamp(9, 32) as i64)),
         ("user_agent", Str(if user_agent.is_empty() { default_user_agent.to_string() } else { user_agent.to_string() })),
     ]
+}
+
+/// The name a permission is remembered under in settings.
+pub(crate) fn feature_key(feature: servo::PermissionFeature) -> &'static str {
+    use servo::PermissionFeature as F;
+    match feature {
+        F::Geolocation => "location",
+        F::Notifications | F::Push => "notifications",
+        F::Camera => "camera",
+        F::Microphone => "microphone",
+        F::Speaker => "speaker",
+        F::Midi => "midi",
+        F::Bluetooth => "bluetooth",
+        F::PersistentStorage => "storage",
+        F::ScreenWakeLock(_) => "wake-lock",
+        F::Gamepad => "gamepad",
+        F::DeviceInfo => "device-info",
+        F::BackgroundSync => "background-sync",
+    }
+}
+
+/// Mutes or unmutes every `<audio>`/`<video>` in a page, including ones that
+/// start playing later.
+fn mute_script(muted: bool) -> String {
+    format!(
+        "(function(m){{window.__ferrumMuted=m;document.querySelectorAll('video,audio').forEach(function(e){{e.muted=m}});\
+         if(!window.__ferrumMuteHook){{window.__ferrumMuteHook=true;document.addEventListener('play',function(e){{\
+         if(window.__ferrumMuted&&'muted' in e.target)e.target.muted=true}},true)}}}})({muted})"
+    )
 }
 
 fn run_file_picker(mut picker: FilePicker) {

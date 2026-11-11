@@ -32,6 +32,18 @@ A fast, native desktop web browser written in Rust.
 | Customization | Interface size, density, corner rounding, tabs on top or down the side, which toolbar buttons show, start page title / background (gradient, colour or your own image) / clock / tiles, custom search engine, what new tabs open, download folder |
 | Privacy & web content | HTTPS-only mode, notification and location permissions, default font size, custom user agent |
 | Theme | System / light / dark; optionally ask websites for their dark style too |
+| Ad & tracker blocking | Built in and on by default: requests from a page to known ad and tracking servers on other sites are cancelled. Count of blocked trackers on the padlock, switch it off per site. The list (Peter Lowe's, ~3,500 servers) is refreshed weekly in the background |
+| Site information | Padlock in the address bar: secure / not secure, trackers blocked, the site's remembered permissions, clear this site's cookies and data |
+| Permissions | "Remember" in permission prompts; remembered answers are listed in settings and can be reset |
+| Reader mode | F9 or the reader button: the article without menus, ads and sidebars, drawn natively; text size, width, and Auto/Light/Sepia/Dark |
+| Tabs | Pin tabs (icon-only, kept by "close others", restored), drag to reorder, playing-audio indicator and mute, sleeping tabs (unloaded after 30 min unused, reload when selected) |
+| Developer tools | F12 console: the page's `console.log`/warnings/errors and uncaught errors, a JavaScript prompt with history; Ctrl+U page source with highlighting |
+| Screenshots | Ctrl+Shift+S saves a PNG of the visible page to your Pictures folder |
+| Notifications | Web notifications appear in the corner of the window (if you allow them) |
+| "Leave this page?" | Pages with unsaved changes can ask before you navigate away |
+| Bookmarks import/export | HTML bookmark files from/to Firefox, Chrome, Edge, Safari |
+| Updates | Checks GitHub once a day for a newer Ferrum (can be turned off) |
+| Pinch zoom | Trackpad pinch zooms the page |
 
 ### Efficiency
 
@@ -39,6 +51,8 @@ A fast, native desktop web browser written in Rust.
 - Draws only when something changes, and sleeps until the next scheduled repaint — no busy redraw loop; background tabs are hidden so Servo throttles them.
 - Profile data is batched and written atomically a couple of seconds after changes, never on the UI's critical path.
 - Downloads stream straight to disk on their own threads.
+- Blocking ads and trackers means less to download, parse and run on most sites.
+- Tabs you haven't used for a while are put to sleep, freeing their memory.
 - History and bookmark lists only lay out the rows on screen.
 
 ## System requirements
@@ -130,6 +144,12 @@ On macOS use ⌘ where it says Ctrl.
 | Ctrl+Shift+B | Toggle bookmarks bar |
 | Ctrl+Shift+O / Ctrl+H / Ctrl+J | Bookmarks / history / downloads panel |
 | Ctrl+, | Settings page |
+| F9, Ctrl+Alt+R | Reader mode |
+| Ctrl+Shift+S | Screenshot |
+| F12, Ctrl+Shift+I / J | Developer console |
+| Ctrl+U | View page source |
+| Ctrl+M | Mute tab (Windows/Linux) |
+| Ctrl+/ | All keyboard shortcuts (`ferrum://shortcuts`) |
 | Ctrl +, Ctrl −, Ctrl 0 | Zoom in / out / reset |
 | F11 | Full screen |
 | Esc | Close menu or popup, leave page full screen |
@@ -151,6 +171,12 @@ src/main.rs       start-up, command line, event loop
 src/browser.rs    window, tabs, Servo callbacks, input, shortcuts
 src/ui.rs         the interface: tabs, toolbar, menus, panels, page dialogs
 src/settings_page.rs  the settings page (ferrum://settings)
+src/features_ui.rs    console panel, site info popup, notifications, reader, shortcuts page
+src/blocker.rs    ad and tracker blocking
+src/reader.rs     reader mode (article extraction + native layout)
+src/devtools.rs   console messages, value formatting, page-source viewer
+src/bookmarks_io.rs  bookmark import/export (Netscape HTML)
+src/updates.rs    update check against GitHub releases
 src/theme.rs      colour themes
 src/profile.rs    settings, bookmarks, history, session (JSON)
 src/downloads.rs  download manager
@@ -164,7 +190,7 @@ scripts/          build scripts for macOS, Linux and Windows
 
 ## Limitations
 
-Servo is still maturing, so some heavy sites (big web apps, some video players) won't render perfectly, and a few CSS features are missing. Not built yet: extensions and sync. Find in page and printing are implemented by Ferrum itself, because Servo has no API for them yet: find runs a small highlighting script in the page, and printing captures the page as images (so printed text isn't selectable, and pages longer than 40 screens are cut off). JavaScript runs on SpiderMonkey (C++), the engine Servo uses; everything else in Ferrum's own code is Rust.
+Servo is still maturing, so some heavy sites (big web apps, some video players) won't render perfectly, and a few CSS features are missing. Not possible on Servo yet, so not in Ferrum: extensions, account sync, DRM-protected video (Netflix, Disney+ and similar use Widevine) and page translation. Servo only shows web notifications that have an icon, and "Leave this page?" prompts appear for navigations started by the page (links, forms, reload) but not for the address bar. Find in page and printing are implemented by Ferrum itself, because Servo has no API for them yet: find runs a small highlighting script in the page, and printing captures the page as images (so printed text isn't selectable, and pages longer than 40 screens are cut off). JavaScript runs on SpiderMonkey (C++), the engine Servo uses; everything else in Ferrum's own code is Rust.
 
 ## License
 

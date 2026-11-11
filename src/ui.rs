@@ -120,13 +120,16 @@ enum TabAction {
     Reload,
     Duplicate,
     Bookmark,
+    Pin,
+    Mute,
     Close,
     CloseOthers,
     CloseRight,
 }
 
 /// Right-click menu shared by both tab layouts.
-fn tab_menu(resp: &egui::Response, index: usize, count: usize, out: &mut Option<(usize, TabAction)>) {
+fn tab_menu(resp: &egui::Response, index: usize, count: usize, tab: &crate::browser::Tab, out: &mut Option<(usize, TabAction)>) {
+    let (pinned, muted) = (tab.pinned, tab.muted);
     resp.context_menu(|ui| {
         ui.set_min_width(180.0);
         let mut item = |ui: &mut Ui, label: &str, action: TabAction, enabled: bool| {
@@ -138,11 +141,32 @@ fn tab_menu(resp: &egui::Response, index: usize, count: usize, out: &mut Option<
         item(ui, "Reload", TabAction::Reload, true);
         item(ui, "Duplicate", TabAction::Duplicate, true);
         item(ui, "Bookmark", TabAction::Bookmark, true);
+        item(ui, if pinned { "Unpin tab" } else { "Pin tab" }, TabAction::Pin, true);
+        item(ui, if muted { "Unmute tab" } else { "Mute tab" }, TabAction::Mute, true);
         ui.separator();
         item(ui, "Close tab", TabAction::Close, true);
-        item(ui, "Close other tabs", TabAction::CloseOthers, count > 1);
+        item(ui, "Close other tabs (keeps pinned)", TabAction::CloseOthers, count > 1);
         item(ui, "Close tabs to the right", TabAction::CloseRight, index + 1 < count);
     });
+}
+
+/// Where a dragged tab would land: the index of the first tab (other than the
+/// dragged one) that `before` says the pointer is in front of.
+fn drop_target(rects: &[egui::Rect], from: usize, before: impl Fn(&egui::Rect) -> bool) -> usize {
+    let mut target = rects.len() - 1;
+    for (i, r) in rects.iter().enumerate() {
+        if before(r) {
+            target = if i > from { i - 1 } else { i };
+            break;
+        }
+    }
+    target
+}
+
+/// Pinned tabs stay among the pinned ones, the others after them.
+fn clamp_to_group(tabs: &[crate::browser::Tab], from: usize, target: usize) -> usize {
+    let pinned = tabs.iter().filter(|t| t.pinned).count();
+    if tabs[from].pinned { target.min(pinned.saturating_sub(1)) } else { target.max(pinned) }
 }
 
 enum ControlOutcome {
@@ -195,6 +219,9 @@ impl Browser {
             if self.panel != SidePanel::None {
                 self.draw_side_panel(ui);
             }
+            if self.devtools.open {
+                self.draw_devtools(ui);
+            }
         }
 
         if self.find.open {
@@ -209,9 +236,13 @@ impl Browser {
         if self.print_job.is_some() {
             self.draw_print_dialog(&ctx);
         }
+        if self.site_info_open && chrome {
+            self.draw_site_info(&ctx);
+        }
         if self.menu_open {
             self.draw_menu(&ctx);
         }
+        self.draw_notification(&ctx);
         self.draw_toast(&ctx);
     }
 
@@ -417,6 +448,7 @@ impl Browser {
         let count = self.tabs.len();
         let accent = self.accent();
         let private = self.profile.is_private();
+        let (mut dragging, mut dropped, mut moved): (Option<usize>, Option<usize>, Option<(usize, usize)>) = (None, None, None);
         egui::Panel::left("vertical_tabs")
             .resizable(true)
             .default_size(220.0)
@@ -431,9 +463,11 @@ impl Browser {
                 }
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    let mut rects: Vec<egui::Rect> = Vec::new();
                     for (i, tab) in self.tabs.iter().enumerate() {
                         let selected = i == self.active;
                         let mut close_rect: Option<egui::Rect> = None;
+                        let mut speaker_rect: Option<egui::Rect> = None;
                         let frame = Frame::new()
                             .fill(if selected { ui.visuals().extreme_bg_color } else { Color32::TRANSPARENT })
                             .stroke(if selected { egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.5)) } else { egui::Stroke::NONE })
@@ -443,27 +477,59 @@ impl Browser {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 self.tab_icon(ui, tab);
+                                if tab.pinned {
+                                    icon(ui, Icon::Pin, 12.0, ui.visuals().weak_text_color());
+                                }
                                 let text = RichText::new(tab.title()).size(13.0);
                                 ui.add(egui::Label::new(if selected { text.strong() } else { text }).truncate().selectable(false));
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     close_rect = Some(icon_button(ui, Icon::Close, 18.0, true, "Close tab").rect);
+                                    if tab.playing || tab.muted {
+                                        let i = if tab.muted { Icon::Muted } else { Icon::Speaker };
+                                        speaker_rect = Some(icon_button(ui, i, 18.0, true, "Mute / unmute tab").rect);
+                                    }
                                 });
                             });
                         });
-                        let resp = ui.interact(resp.response.rect, Id::new(("vtab", i)), Sense::click()).on_hover_text(tab.title());
-                        tab_menu(&resp, i, count, &mut tab_action);
-                        // The whole-tab click area sits on top of the ✕, so tell them apart by position.
+                        rects.push(resp.response.rect);
+                        let resp = ui.interact(resp.response.rect, Id::new(("vtab", i)), Sense::click_and_drag()).on_hover_text(tab.title());
+                        tab_menu(&resp, i, count, tab, &mut tab_action);
+                        // The whole-tab click area sits on top of the buttons, so tell them apart by position.
                         if resp.clicked() {
-                            let on_close = close_rect.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
-                            if on_close { close = Some(i) } else { select = Some(i) }
+                            let at = |r: Option<egui::Rect>| r.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
+                            if at(close_rect) {
+                                close = Some(i)
+                            } else if at(speaker_rect) {
+                                tab_action = Some((i, TabAction::Mute));
+                            } else {
+                                select = Some(i)
+                            }
                         }
                         if resp.middle_clicked() {
                             close = Some(i);
                         }
+                        if resp.dragged() {
+                            dragging = Some(i);
+                        }
+                        if resp.drag_stopped() {
+                            dropped = Some(i);
+                        }
+                    }
+                    if let (Some(from), Some(p)) = (dragging.or(dropped), ui.ctx().pointer_latest_pos()) {
+                        let target = drop_target(&rects, from, |r| p.y < r.center().y);
+                        let target = clamp_to_group(&self.tabs, from, target);
+                        let y = if target > from { rects[target].bottom() } else { rects[target].top() };
+                        let x = rects[0].x_range();
+                        ui.painter().line_segment([pos2(x.min, y), pos2(x.max, y)], egui::Stroke::new(2.0_f32, accent));
+                        if dropped.is_some() {
+                            moved = Some((from, target));
+                        }
                     }
                 });
             });
-        if let Some((i, action)) = tab_action {
+        if let Some((from, to)) = moved {
+            self.move_tab(from, to);
+        } else if let Some((i, action)) = tab_action {
             self.tab_action(i, action);
         } else if let Some(i) = close {
             self.close_tab(i);
@@ -500,28 +566,41 @@ impl Browser {
                     self.toast("Bookmarked");
                 }
             },
+            TabAction::Pin => self.toggle_pin(i),
+            TabAction::Mute => self.toggle_mute(i),
             TabAction::Close => self.close_tab(i),
             TabAction::CloseOthers => {
+                let mut keep = i;
                 for j in (0..self.tabs.len()).rev() {
-                    if j != i {
+                    if j != i && !self.tabs[j].pinned {
                         self.close_tab_quietly(j);
+                        if j < keep {
+                            keep -= 1;
+                        }
                     }
                 }
-                self.activate(0);
+                self.activate(keep);
             },
             TabAction::CloseRight => {
                 for j in (i + 1..self.tabs.len()).rev() {
-                    self.close_tab_quietly(j);
+                    if !self.tabs[j].pinned {
+                        self.close_tab_quietly(j);
+                    }
                 }
-                self.activate(self.active.min(i));
+                self.activate(self.active.min(self.tabs.len() - 1));
             },
         }
     }
 
     /// Favicon, spinner, crash marker or letter tile for a tab.
     fn tab_icon(&self, ui: &mut Ui, tab: &crate::browser::Tab) {
-        if tab.internal.is_some() {
-            icon(ui, Icon::Gear, 16.0, ui.visuals().strong_text_color());
+        if let Some(page) = tab.internal {
+            let i = match page {
+                crate::browser::InternalPage::Settings => Icon::Gear,
+                crate::browser::InternalPage::Shortcuts => Icon::Info,
+                crate::browser::InternalPage::Source => Icon::Code,
+            };
+            icon(ui, i, 16.0, ui.visuals().strong_text_color());
         } else if tab.crashed.is_some() {
             icon(ui, Icon::Warning, 16.0, Color32::from_rgb(220, 60, 60));
         } else if tab.loading() {
@@ -545,6 +624,8 @@ impl Browser {
         let fill = ui.visuals().panel_fill;
         let tab_fill = ui.visuals().extreme_bg_color;
         let private = self.profile.is_private();
+        let accent = self.accent();
+        let (mut dragging, mut dropped, mut moved): (Option<usize>, Option<usize>, Option<(usize, usize)>) = (None, None, None);
 
         egui::Panel::top("tabs")
             .frame(Frame::new().fill(fill).inner_margin(Margin { left: 6, right: 6, top: 6, bottom: 0 }))
@@ -556,23 +637,47 @@ impl Browser {
                         ui.label(RichText::new(" Private ").size(11.0).strong().color(Color32::WHITE).background_color(Color32::from_rgb(110, 60, 160)));
                     }
                     let available = ui.available_width() - 40.0;
-                    let width = (available / self.tabs.len().max(1) as f32).clamp(60.0, 220.0);
+                    let pinned_count = self.tabs.iter().filter(|t| t.pinned).count();
+                    const PINNED_WIDTH: f32 = 42.0;
+                    let unpinned = (self.tabs.len() - pinned_count).max(1) as f32;
+                    let width = ((available - pinned_count as f32 * (PINNED_WIDTH + 2.0)) / unpinned).clamp(60.0, 220.0);
                     egui::ScrollArea::horizontal()
                         .max_width(available)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
+                                let mut rects: Vec<egui::Rect> = Vec::new();
                                 for (i, tab) in self.tabs.iter().enumerate() {
                                     let selected = i == self.active;
                                     let mut close_rect: Option<egui::Rect> = None;
+                                    let mut speaker_rect: Option<egui::Rect> = None;
                                     let frame = Frame::new()
                                         .fill(if selected { tab_fill } else { Color32::TRANSPARENT })
                                         .corner_radius(CornerRadius { nw: self.profile.settings.roundness + 2, ne: self.profile.settings.roundness + 2, sw: 0, se: 0 })
-                                        .inner_margin(Margin { left: 10, right: 4, top: 6, bottom: 6 });
+                                        .inner_margin(if tab.pinned { Margin { left: 13, right: 4, top: 6, bottom: 6 } } else { Margin { left: 10, right: 4, top: 6, bottom: 6 } });
                                     let resp = frame.show(ui, |ui| {
+                                        if tab.pinned {
+                                            // Pinned: just the icon (and a speaker when playing).
+                                            ui.set_width(PINNED_WIDTH - 17.0);
+                                            ui.horizontal(|ui| {
+                                                self.tab_icon(ui, tab);
+                                                if tab.playing || tab.muted {
+                                                    // A small dot: accent while playing, grey when muted.
+                                                    let rect = ui.min_rect();
+                                                    let dot = if tab.muted { ui.visuals().weak_text_color() } else { accent };
+                                                    ui.painter().circle_filled(rect.right_top() + vec2(1.0, 1.0), 3.5, dot);
+                                                }
+                                            });
+                                            return;
+                                        }
                                         ui.set_width(width - 14.0);
                                         ui.horizontal(|ui| {
                                             self.tab_icon(ui, tab);
+                                            if tab.playing || tab.muted {
+                                                let i = if tab.muted { Icon::Muted } else { Icon::Speaker };
+                                                let tip = if tab.muted { "Unmute tab" } else { "Mute tab" };
+                                                speaker_rect = Some(icon_button(ui, i, 18.0, true, tip).rect);
+                                            }
                                             let title = tab.title();
                                             let text = RichText::new(title.clone()).size(13.0);
                                             let text = if selected { text.strong() } else { text };
@@ -584,16 +689,40 @@ impl Browser {
                                             });
                                         });
                                     });
-                                    let resp = ui.interact(resp.response.rect, Id::new(("tab", i)), Sense::click());
+                                    rects.push(resp.response.rect);
+                                    let resp = ui.interact(resp.response.rect, Id::new(("tab", i)), Sense::click_and_drag());
                                     let resp = resp.on_hover_text(tab.title());
-                                    tab_menu(&resp, i, count, &mut tab_action);
-                                    // The whole-tab click area sits on top of the ✕, so tell them apart by position.
+                                    tab_menu(&resp, i, count, tab, &mut tab_action);
+                                    // The whole-tab click area sits on top of the buttons, so tell them apart by position.
                                     if resp.clicked() {
-                                        let on_close = close_rect.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
-                                        if on_close { close = Some(i) } else { select = Some(i) }
+                                        let at = |r: Option<egui::Rect>| r.zip(resp.interact_pointer_pos()).is_some_and(|(r, p)| r.contains(p));
+                                        if at(close_rect) {
+                                            close = Some(i)
+                                        } else if at(speaker_rect) {
+                                            tab_action = Some((i, TabAction::Mute));
+                                        } else {
+                                            select = Some(i)
+                                        }
                                     }
                                     if resp.middle_clicked() {
                                         close = Some(i);
+                                    }
+                                    if resp.dragged() {
+                                        dragging = Some(i);
+                                    }
+                                    if resp.drag_stopped() {
+                                        dropped = Some(i);
+                                    }
+                                }
+                                // While dragging a tab, show where it will land.
+                                if let (Some(from), Some(p)) = (dragging.or(dropped), ui.ctx().pointer_latest_pos()) {
+                                    let target = drop_target(&rects, from, |r| p.x < r.center().x);
+                                    let target = clamp_to_group(&self.tabs, from, target);
+                                    let x = if target > from { rects[target].right() } else { rects[target].left() };
+                                    let y = rects[0].y_range();
+                                    ui.painter().line_segment([pos2(x, y.min + 3.0), pos2(x, y.max - 3.0)], egui::Stroke::new(2.0_f32, accent));
+                                    if dropped.is_some() {
+                                        moved = Some((from, target));
                                     }
                                 }
                             });
@@ -604,7 +733,9 @@ impl Browser {
                 });
             });
 
-        if let Some((i, action)) = tab_action {
+        if let Some((from, to)) = moved {
+            self.move_tab(from, to);
+        } else if let Some((i, action)) = tab_action {
             self.tab_action(i, action);
         } else if let Some(i) = close {
             self.close_tab(i);
@@ -635,6 +766,14 @@ impl Browser {
             self.profile.settings.show_downloads_button,
         );
         let button = if self.profile.settings.compact { 26.0 } else { 30.0 };
+        let reader_on = self.active_tab().reader.is_some();
+        let blocked = webview.as_ref().map_or(0, |w| self.blocker.blocked_on(w.id(), w.url().as_ref().map_or("", |u| u.as_str())));
+        let (site_icon, site_color, site_tip) = match url.as_ref().map(|u| u.scheme()) {
+            Some("https") => (Icon::Lock, None, "Connection is secure — site information".to_string()),
+            Some("http") => (Icon::Warning, Some(Color32::from_rgb(200, 120, 30)), "Not secure — site information".to_string()),
+            Some(_) => (Icon::Info, None, "Page information".to_string()),
+            None => (Icon::Info, None, String::new()),
+        };
 
         let mut url_rect = egui::Rect::NOTHING;
         let mut url_focused = false;
@@ -683,11 +822,45 @@ impl Browser {
                                 self.toggle_bookmark();
                             }
                         }
+                        if webview.is_some() {
+                            let on = reader_on;
+                            let resp = icon_button(ui, Icon::Reader, button, true, if on { "Exit reader mode (F9)" } else { "Reader mode (F9)" });
+                            if on {
+                                ui.painter().rect_stroke(resp.rect.shrink(2.0), 5.0, egui::Stroke::new(1.5_f32, accent), egui::StrokeKind::Inside);
+                            }
+                            if resp.clicked() {
+                                self.toggle_reader();
+                            }
+                        }
                         if (zoom - 1.0).abs() > 0.001 && ui.small_button(format!("{}%", (zoom * 100.0).round())).on_hover_text("Reset zoom (Ctrl+0)").clicked() {
                             self.set_zoom(1.0);
                         }
 
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            if url.is_some() && !self.editing {
+                                let tip = if blocked > 0 { format!("{site_tip}\n{blocked} trackers blocked") } else { site_tip.clone() };
+                                let resp = match site_color {
+                                    Some(c) => {
+                                        let r = ui.allocate_response(Vec2::splat(button), Sense::click()).on_hover_text(tip);
+                                        if r.hovered() {
+                                            ui.painter().rect_filled(r.rect, button * 0.25, ui.visuals().widgets.hovered.weak_bg_fill);
+                                        }
+                                        crate::icons::paint_icon(ui, site_icon, r.rect.shrink(button * 0.3), c);
+                                        r
+                                    },
+                                    None => icon_button(ui, site_icon, button, true, &tip),
+                                };
+                                if blocked > 0 {
+                                    let badge = resp.rect.right_bottom() + vec2(-4.0, -5.0);
+                                    ui.painter().circle_filled(badge, 6.0, accent);
+                                    let n = if blocked > 99 { "99+".to_string() } else { blocked.to_string() };
+                                    ui.painter().text(badge, Align2::CENTER_CENTER, n, FontId::proportional(if blocked > 9 { 7.0 } else { 9.0 }), Color32::WHITE);
+                                }
+                                ui.memory_mut(|m| m.data.insert_temp(Id::new("site_button"), resp.rect));
+                                if resp.clicked() {
+                                    self.site_info_open = !self.site_info_open;
+                                }
+                            }
                             let id = Id::new("location");
                             let output = egui::TextEdit::singleline(&mut self.location)
                                 .id(id)
@@ -878,8 +1051,24 @@ impl Browser {
             return;
         }
 
-        if self.active_tab().internal == Some(crate::browser::InternalPage::Settings) {
-            self.draw_settings_page(ui, rect);
+        match self.active_tab().internal {
+            Some(crate::browser::InternalPage::Settings) => {
+                self.draw_settings_page(ui, rect);
+                return;
+            },
+            Some(crate::browser::InternalPage::Shortcuts) => {
+                self.draw_shortcuts_page(ui, rect);
+                return;
+            },
+            Some(crate::browser::InternalPage::Source) => {
+                if let Some(source) = self.tabs[self.active].source.as_mut() {
+                    crate::devtools::draw_source(ui, rect, source);
+                }
+                return;
+            },
+            None => {},
+        }
+        if self.draw_reader(ui, rect) {
             return;
         }
         let Some(webview) = self.active_webview().cloned() else {
@@ -1192,6 +1381,7 @@ impl Browser {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(format!("{host} wants to {what}")).strong());
                                 ui.add_space(12.0);
+                                ui.checkbox(&mut self.remember_permission, "Remember");
                                 if ui.button("Block").clicked() {
                                     outcome = ControlOutcome::Dismiss;
                                 }
@@ -1201,6 +1391,26 @@ impl Browser {
                             });
                         });
                     });
+            },
+            PageControl::Unload(_) => {
+                let modal = egui::Modal::new(Id::new("page_unload")).show(ctx, |ui| {
+                    ui.set_width(380.0);
+                    ui.label(RichText::new("Leave this page?").strong().size(16.0));
+                    ui.add_space(4.0);
+                    ui.label(format!("{host} says changes you made may not be saved."));
+                    ui.add_space(10.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new("Leave").color(Color32::WHITE)).fill(accent)).clicked() {
+                            outcome = ControlOutcome::Confirm;
+                        }
+                        if ui.button("Stay").clicked() {
+                            outcome = ControlOutcome::Dismiss;
+                        }
+                    });
+                });
+                if modal.should_close() && matches!(outcome, ControlOutcome::Keep) {
+                    outcome = ControlOutcome::Dismiss;
+                }
             },
             PageControl::Select(select) => {
                 let pos = select.position();
@@ -1356,8 +1566,15 @@ impl Browser {
                 SimpleDialog::Prompt(d) => d.dismiss(),
             },
             (PageControl::Auth { request, user, pass }, ControlOutcome::Confirm) => request.authenticate(user, pass),
-            (PageControl::Permission(request), ControlOutcome::Confirm) => request.allow(),
-            (PageControl::Permission(request), _) => request.deny(),
+            (PageControl::Permission(request), outcome) => {
+                let allowed = matches!(outcome, ControlOutcome::Confirm);
+                if self.remember_permission {
+                    self.remember_permission_answer(request.feature(), allowed);
+                }
+                if allowed { request.allow() } else { request.deny() }
+            },
+            (PageControl::Unload(request), ControlOutcome::Confirm) => request.allow(),
+            (PageControl::Unload(request), _) => request.deny(),
             (PageControl::Select(mut select), ControlOutcome::Select(ids)) => {
                 select.select(ids);
                 select.submit();
@@ -1444,6 +1661,14 @@ impl Browser {
                         self.open_find();
                         close = true;
                     }
+                    if row(ui, if self.active_tab().reader.is_some() { "Exit reader mode" } else { "Reader mode" }, "F9") {
+                        self.toggle_reader();
+                        close = true;
+                    }
+                    if row(ui, "Take screenshot", "Ctrl+Shift+S") {
+                        self.take_screenshot();
+                        close = true;
+                    }
                     if row(ui, "Print…", "Ctrl+P") {
                         self.start_print();
                         close = true;
@@ -1452,9 +1677,56 @@ impl Browser {
                         self.toggle_window_fullscreen();
                         close = true;
                     }
+                    ui.menu_button("More tools", |ui| {
+                        ui.set_min_width(220.0);
+                        if ui.add(egui::Button::new("Developer console").shortcut_text("F12").frame(false)).clicked() {
+                            self.toggle_devtools();
+                            close = true;
+                        }
+                        if ui.add(egui::Button::new("View page source").shortcut_text("Ctrl+U").frame(false)).clicked() {
+                            self.view_source();
+                            close = true;
+                        }
+                        let muted = self.active_tab().muted;
+                        if ui.add(egui::Button::new(if muted { "Unmute tab" } else { "Mute tab" }).frame(false)).clicked() {
+                            self.toggle_mute(self.active);
+                            close = true;
+                        }
+                        let pinned = self.active_tab().pinned;
+                        if ui.add(egui::Button::new(if pinned { "Unpin tab" } else { "Pin tab" }).frame(false)).clicked() {
+                            self.toggle_pin(self.active);
+                            close = true;
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Import bookmarks…").frame(false)).clicked() {
+                            close = true;
+                            self.import_bookmarks();
+                        }
+                        if ui.add(egui::Button::new("Export bookmarks…").frame(false)).clicked() {
+                            close = true;
+                            self.export_bookmarks();
+                        }
+                        if ui.add(egui::Button::new("Clear cookies and site data").frame(false)).clicked() {
+                            close = true;
+                            self.clear_site_data();
+                        }
+                    });
                     ui.separator();
+                    if let Some(crate::updates::UpdateStatus::Available { version, url }) = self.update_status() {
+                        let label = RichText::new(format!("Update available: Ferrum {version}")).color(self.accent()).strong();
+                        if ui.add(egui::Button::new(label).frame(false).min_size(vec2(240.0, 26.0))).clicked() {
+                            if let Ok(url) = Url::parse(&url) {
+                                self.open_tab(Some(url));
+                            }
+                            close = true;
+                        }
+                    }
                     if row(ui, "Settings", "Ctrl+,") {
                         self.open_settings();
+                        close = true;
+                    }
+                    if row(ui, "Keyboard shortcuts", "Ctrl+/") {
+                        self.open_internal(crate::browser::InternalPage::Shortcuts);
                         close = true;
                     }
                     if row(ui, "Quit", "") {
@@ -1605,6 +1877,14 @@ impl Browser {
     }
 
     fn draw_bookmarks(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if ui.small_button("Import…").on_hover_text("From an HTML file exported by Firefox, Chrome, Edge or Safari").clicked() {
+                self.import_bookmarks();
+            }
+            if ui.small_button("Export…").on_hover_text("As an HTML file other browsers can import").clicked() {
+                self.export_bookmarks();
+            }
+        });
         if let Some(url) = self.active_tab().url() {
             if !self.profile.is_bookmarked(url.as_str()) && ui.button("Bookmark this page").clicked() {
                 self.toggle_bookmark();

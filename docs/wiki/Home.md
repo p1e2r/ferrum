@@ -32,6 +32,13 @@ print.rs     page capture → PDF → printer
 location.rs  turns address-bar text into a URL or a search
 keys.rs      winit key events → W3C key events for Servo
 icons.rs     vector-drawn toolbar icons
+settings_page.rs  ferrum://settings
+features_ui.rs    console panel, site info, notifications, reader, ferrum://shortcuts
+blocker.rs   ad and tracker blocking
+reader.rs    reader mode
+devtools.rs  console and page source
+bookmarks_io.rs   bookmark import/export
+updates.rs   update check
 ```
 
 ## Key ideas

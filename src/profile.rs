@@ -4,6 +4,7 @@
 //! The user's profile: settings, bookmarks, history and the last session.
 //! Stored as small JSON files; writes are batched so typing/browsing never waits on disk.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -168,6 +169,34 @@ pub struct Settings {
     pub start_show_clock: bool,
     pub start_show_bookmarks: bool,
     pub start_show_frequent: bool,
+
+    // Modern features
+    /// Block requests to known ad and tracking servers from other sites.
+    pub block_trackers: bool,
+    /// Sites (host names) where the blocker is switched off.
+    pub blocker_exceptions: Vec<String>,
+    /// Remembered permission answers: host → feature → allowed.
+    pub site_permissions: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Check GitHub for a newer Ferrum at start-up (at most once a day).
+    pub check_updates: bool,
+    /// Last update check, seconds since the Unix epoch.
+    pub last_update_check: u64,
+    /// Unload tabs that haven't been used for a while (they reload when selected).
+    pub sleep_tabs: bool,
+    pub sleep_minutes: u32,
+    pub reader_font_size: f32,
+    pub reader_theme: ReaderTheme,
+    pub reader_width: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReaderTheme {
+    /// Follows the interface's light/dark mode.
+    #[default]
+    Auto,
+    Light,
+    Sepia,
+    Dark,
 }
 
 pub const DEFAULT_ACCENT: [u8; 3] = [222, 98, 52];
@@ -208,6 +237,16 @@ impl Default for Settings {
             start_show_clock: false,
             start_show_bookmarks: true,
             start_show_frequent: true,
+            block_trackers: true,
+            blocker_exceptions: Vec::new(),
+            site_permissions: BTreeMap::new(),
+            check_updates: true,
+            last_update_check: 0,
+            sleep_tabs: true,
+            sleep_minutes: 30,
+            reader_font_size: 19.0,
+            reader_theme: ReaderTheme::Auto,
+            reader_width: 720.0,
         }
     }
 }
@@ -240,7 +279,16 @@ struct Session {
     /// Page titles, parallel to `tabs`, so restored tabs show their names
     /// before they've loaded. (Missing in sessions saved by older versions.)
     titles: Vec<String>,
+    /// Which tabs are pinned, parallel to `tabs`.
+    pinned: Vec<bool>,
     active: usize,
+}
+
+/// A tab as saved in the session.
+pub struct SavedTab {
+    pub url: String,
+    pub title: String,
+    pub pinned: bool,
 }
 
 pub struct Profile {
@@ -353,18 +401,44 @@ impl Profile {
     // ----- session -----
 
     /// The tabs open last time as (url, title) pairs, and which one was active.
-    pub fn load_session(&self) -> (Vec<(String, String)>, usize) {
+    pub fn load_session(&self) -> (Vec<SavedTab>, usize) {
         let Some(dir) = &self.dir else { return (Vec::new(), 0) };
         let mut session: Session = read_json(&dir.join("session.json"));
         session.titles.resize(session.tabs.len(), String::new());
-        (session.tabs.into_iter().zip(session.titles).collect(), session.active)
+        session.pinned.resize(session.tabs.len(), false);
+        let tabs = session
+            .tabs
+            .into_iter()
+            .zip(session.titles)
+            .zip(session.pinned)
+            .map(|((url, title), pinned)| SavedTab { url, title, pinned })
+            .collect();
+        (tabs, session.active)
     }
 
-    pub fn save_session(&self, tabs: Vec<(String, String)>, active: usize) {
+    pub fn save_session(&self, tabs: Vec<SavedTab>, active: usize) {
         if let Some(dir) = &self.dir {
-            let (tabs, titles) = tabs.into_iter().unzip();
-            write_json(&dir.join("session.json"), &Session { tabs, titles, active });
+            let mut session = Session { active, ..Default::default() };
+            for t in tabs {
+                session.tabs.push(t.url);
+                session.titles.push(t.title);
+                session.pinned.push(t.pinned);
+            }
+            write_json(&dir.join("session.json"), &session);
         }
+    }
+
+    /// Replace the bookmarks with an imported list, skipping ones already present.
+    pub fn import_bookmarks(&mut self, items: Vec<Bookmark>) -> usize {
+        let mut added = 0;
+        for b in items {
+            if !self.is_bookmarked(&b.url) {
+                self.bookmarks.push(b);
+                added += 1;
+            }
+        }
+        self.mark_dirty();
+        added
     }
 
     // ----- bookmarks -----

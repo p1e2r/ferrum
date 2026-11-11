@@ -11,6 +11,8 @@
 use egui::{Align, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use url::Url;
 
+use crate::updates::UpdateStatus;
+
 use crate::browser::{APP_NAME, Browser};
 use crate::profile::{DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, ThemeChoice};
 use crate::theme::{ThemePreset, mix};
@@ -116,6 +118,12 @@ enum Setting {
     DataFolder,
     ResetAll,
     About,
+    BlockTrackers,
+    BlockerExceptions,
+    SitePermissions,
+    SleepTabs,
+    BookmarkFile,
+    CheckUpdates,
 }
 
 struct Item {
@@ -145,6 +153,7 @@ const ITEMS: &[Item] = &[
     item(S::Appearance, T::Density, "Density", "Compact fits more on screen.", "compact comfortable spacing padding", false),
     item(S::Appearance, T::Roundness, "Corner rounding", "How rounded buttons, tabs and fields are.", "radius corners square", false),
     item(S::Tabs, T::TabLayout, "Tab position", "Along the top, or a list down the side.", "vertical tabs sidebar horizontal", false),
+    item(S::Tabs, T::SleepTabs, "Sleeping tabs", "Unload tabs you haven't used for a while to save memory and battery. They reload when you select them. Pinned tabs and tabs playing sound stay awake.", "memory performance discard suspend battery", false),
     item(S::Tabs, T::BookmarksBar, "Bookmarks bar", "Show your bookmarks under the toolbar. Ctrl+Shift+B.", "favourites favorites", false),
     item(S::Tabs, T::HomeButton, "Home button", "", "toolbar", false),
     item(S::Tabs, T::BookmarkButton, "Bookmark star", "In the address bar.", "toolbar favourite", false),
@@ -164,6 +173,9 @@ const ITEMS: &[Item] = &[
     item(S::Startup, T::HomePage, "Home page", "Opened by the Home button and at start-up. Leave empty for the start page.", "homepage url start", true),
     item(S::Downloads, T::DownloadFolder, "Download folder", "", "location save path directory", true),
     item(S::Downloads, T::AskWhereToSave, "Ask where to save each file", "", "save as dialog", false),
+    item(S::Privacy, T::BlockTrackers, "Block ads and trackers", "Stops pages from loading known advertising and tracking servers run by other companies. Pages load faster and use less data.", "adblock ad blocker tracking protection privacy shield", false),
+    item(S::Privacy, T::BlockerExceptions, "Sites where blocking is off", "Switch blocking off for a site from the padlock in the address bar.", "allowlist whitelist exceptions adblock", true),
+    item(S::Privacy, T::SitePermissions, "Remembered permissions", "Answers you asked Ferrum to remember for camera, location, notifications and so on.", "site settings camera microphone location notifications allow block", true),
     item(S::Privacy, T::HttpsOnly, "HTTPS-only mode", "Only connect to sites over a secure connection. Sites without HTTPS won't load.", "secure ssl tls encryption http", false),
     item(S::Privacy, T::Notifications, "Notifications", "Let sites ask to show notifications. Off by default.", "permission alerts", false),
     item(S::Privacy, T::Location, "Location", "Let sites ask for your location. Off by default.", "permission geolocation gps", false),
@@ -173,6 +185,8 @@ const ITEMS: &[Item] = &[
     item(S::WebContent, T::FontSize, "Font size", "For pages that don't set their own.", "text size letters fonts", false),
     item(S::Advanced, T::UserAgent, "User agent", "What Ferrum tells websites it is. Leave empty for the default.", "ua user-agent browser string spoof", true),
     item(S::Advanced, T::DataFolder, "Profile folder", "Settings, bookmarks, history, cookies and the crash log.", "data files location", false),
+    item(S::Advanced, T::BookmarkFile, "Import or export bookmarks", "Bookmark files (HTML) from Firefox, Chrome, Edge and Safari can be imported, and exported files open in any of them.", "import export html backup migrate move", false),
+    item(S::Advanced, T::CheckUpdates, "Check for updates", "Look for a newer Ferrum on GitHub once a day.", "update upgrade new version release", false),
     item(S::Advanced, T::ResetAll, "Reset all settings", "Bookmarks, history and cookies are kept.", "defaults restore factory", false),
     item(S::About, T::About, "", "", "version licence license servo engine github bug report", true),
 ];
@@ -604,6 +618,68 @@ impl Browser {
                 }
             },
             Setting::About => self.about(ui),
+            Setting::BlockTrackers => {
+                toggle(ui, &mut s.block_trackers, accent);
+                ui.label(RichText::new(format!("{} servers listed", self.blocker.domain_count())).weak().size(11.0));
+            },
+            Setting::BlockerExceptions => {
+                if s.blocker_exceptions.is_empty() {
+                    ui.label(RichText::new("None").weak());
+                }
+                let mut remove = None;
+                for (i, host) in s.blocker_exceptions.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(host);
+                        if ui.small_button("Remove").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    s.blocker_exceptions.remove(i);
+                }
+            },
+            Setting::SitePermissions => {
+                if s.site_permissions.is_empty() {
+                    ui.label(RichText::new("None").weak());
+                }
+                let mut forget: Option<String> = None;
+                if !s.site_permissions.is_empty() {
+                    egui::Grid::new("site_permissions").num_columns(3).spacing(vec2(16.0, 4.0)).show(ui, |ui| {
+                        for (host, features) in &s.site_permissions {
+                            ui.label(host);
+                            let list: Vec<String> = features.iter().map(|(f, ok)| format!("{f}: {}", if *ok { "allowed" } else { "blocked" })).collect();
+                            ui.label(RichText::new(list.join(", ")).weak());
+                            if ui.small_button("Forget").clicked() {
+                                forget = Some(host.clone());
+                            }
+                            ui.end_row();
+                        }
+                    });
+                }
+                if let Some(host) = forget {
+                    s.site_permissions.remove(&host);
+                }
+            },
+            Setting::SleepTabs => {
+                toggle(ui, &mut s.sleep_tabs, accent);
+                if s.sleep_tabs {
+                    ui.add(egui::DragValue::new(&mut s.sleep_minutes).range(5..=480).prefix("after ").suffix(" min"));
+                }
+            },
+            Setting::BookmarkFile => {
+                ui.horizontal(|ui| {
+                    if ui.button("Import…").clicked() {
+                        self.import_bookmarks();
+                    }
+                    if ui.button("Export…").clicked() {
+                        self.export_bookmarks();
+                    }
+                });
+            },
+            Setting::CheckUpdates => {
+                toggle(ui, &mut s.check_updates, accent);
+            },
         }
     }
 
@@ -677,6 +753,33 @@ impl Browser {
             ui.vertical(|ui| {
                 ui.label(RichText::new(APP_NAME).size(22.0).strong());
                 ui.label(format!("Version {} (nightly)", crate::VERSION));
+                let mut check = false;
+                ui.horizontal(|ui| match self.update_status() {
+                    None => check = ui.small_button("Check for updates").clicked(),
+                    Some(UpdateStatus::Checking) => {
+                        ui.spinner();
+                        ui.label("Checking for updates…");
+                    },
+                    Some(UpdateStatus::UpToDate) => {
+                        ui.label(RichText::new("Ferrum is up to date").weak());
+                        check = ui.small_button("Check again").clicked();
+                    },
+                    Some(UpdateStatus::Available { version, url }) => {
+                        ui.label(RichText::new(format!("Ferrum {version} is available")).strong().color(self.accent()));
+                        if ui.button("Download").clicked() {
+                            if let Ok(url) = Url::parse(&url) {
+                                self.open_tab(Some(url));
+                            }
+                        }
+                    },
+                    Some(UpdateStatus::Failed(e)) => {
+                        ui.label(RichText::new("Couldn't check for updates").weak()).on_hover_text(e);
+                        check = ui.small_button("Try again").clicked();
+                    },
+                });
+                if check {
+                    self.check_for_updates();
+                }
                 ui.label(RichText::new("Servo engine · MIT licence").weak());
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {

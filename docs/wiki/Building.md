@@ -80,4 +80,4 @@ Pull requests are built and tested but publish nothing.
 cargo test --bins
 ```
 
-Unit tests cover address-bar parsing (`location.rs`), download file naming and detection (`downloads.rs`) and the keyboard name mapping (`keys.rs`).
+Unit tests cover address-bar parsing (`location.rs`), download file naming and detection (`downloads.rs`), the keyboard name mapping (`keys.rs`), PDF output (`print.rs`), tracker matching and list parsing (`blocker.rs`), article parsing (`reader.rs`), console formatting and source highlighting (`devtools.rs`), bookmark files (`bookmarks_io.rs`) and version comparison (`updates.rs`).

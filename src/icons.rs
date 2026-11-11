@@ -23,6 +23,14 @@ pub enum Icon {
     Warning,
     History,
     Gear,
+    Lock,
+    Info,
+    Speaker,
+    Muted,
+    Pin,
+    Shield,
+    Reader,
+    Code,
 }
 
 /// A square icon button. Returns the click response.
@@ -58,7 +66,7 @@ pub fn icon(ui: &mut Ui, icon: Icon, size: f32, color: Color32) -> Response {
     response
 }
 
-fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
+pub fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
     let p = ui.painter();
     let s = Stroke::new(1.8_f32, color);
     let c = r.center();
@@ -170,6 +178,78 @@ fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
                 pos2(r.right() - w * 0.18, c.y - h * 0.12),
             ];
             p.add(Shape::line(body.to_vec(), s));
+        },
+        Icon::Lock => {
+            let body = Rect::from_min_max(pos2(r.left() + w * 0.1, c.y - h * 0.05), pos2(r.right() - w * 0.1, r.bottom()));
+            p.rect_filled(body, 2.0, color);
+            let arc: Vec<Pos2> = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::PI + i as f32 / 12.0 * std::f32::consts::PI;
+                    pos2(c.x + a.cos() * w * 0.24, c.y - h * 0.05 + a.sin() * h * 0.42)
+                })
+                .collect();
+            p.add(Shape::line(arc, s));
+        },
+        Icon::Info => {
+            p.circle_stroke(c, w * 0.5, s);
+            p.line_segment([pos2(c.x, c.y - h * 0.02), pos2(c.x, c.y + h * 0.28)], s);
+            p.circle_filled(pos2(c.x, c.y - h * 0.24), 1.3, color);
+        },
+        Icon::Speaker | Icon::Muted => {
+            let cone = vec![
+                pos2(r.left(), c.y - h * 0.16),
+                pos2(r.left() + w * 0.22, c.y - h * 0.16),
+                pos2(r.left() + w * 0.5, r.top() + h * 0.05),
+                pos2(r.left() + w * 0.5, r.bottom() - h * 0.05),
+                pos2(r.left() + w * 0.22, c.y + h * 0.16),
+                pos2(r.left(), c.y + h * 0.16),
+            ];
+            p.add(Shape::convex_polygon(cone, color, Stroke::NONE));
+            if matches!(icon, Icon::Muted) {
+                let x = r.left() + w * 0.78;
+                p.line_segment([pos2(x - w * 0.18, c.y - h * 0.18), pos2(x + w * 0.18, c.y + h * 0.18)], s);
+                p.line_segment([pos2(x - w * 0.18, c.y + h * 0.18), pos2(x + w * 0.18, c.y - h * 0.18)], s);
+            } else {
+                for k in [0.28_f32, 0.46] {
+                    let arc: Vec<Pos2> = (0..=8)
+                        .map(|i| {
+                            let a = -0.8 + i as f32 / 8.0 * 1.6;
+                            pos2(r.left() + w * 0.5 + a.cos() * w * k, c.y + a.sin() * h * k)
+                        })
+                        .collect();
+                    p.add(Shape::line(arc, Stroke::new(1.4_f32, color)));
+                }
+            }
+        },
+        Icon::Pin => {
+            let head = Rect::from_center_size(pos2(c.x, r.top() + h * 0.25), vec2(w * 0.5, h * 0.42));
+            p.rect_filled(head, 1.5, color);
+            p.line_segment([pos2(r.left() + w * 0.12, c.y + h * 0.05), pos2(r.right() - w * 0.12, c.y + h * 0.05)], s);
+            p.line_segment([pos2(c.x, c.y + h * 0.05), pos2(c.x, r.bottom())], s);
+        },
+        Icon::Shield => {
+            let pts = vec![
+                pos2(c.x, r.top()),
+                pos2(r.right(), r.top() + h * 0.18),
+                pos2(r.right() - w * 0.08, c.y + h * 0.15),
+                pos2(c.x, r.bottom()),
+                pos2(r.left() + w * 0.08, c.y + h * 0.15),
+                pos2(r.left(), r.top() + h * 0.18),
+            ];
+            p.add(Shape::convex_polygon(pts, color, Stroke::NONE));
+        },
+        Icon::Reader => {
+            for (i, k) in [1.0_f32, 0.85, 1.0, 0.6].iter().enumerate() {
+                let y = r.top() + h * (0.1 + i as f32 * 0.27);
+                p.line_segment([pos2(r.left(), y), pos2(r.left() + w * k, y)], s);
+            }
+        },
+        Icon::Code => {
+            p.line_segment([pos2(r.left() + w * 0.3, r.top() + h * 0.15), pos2(r.left(), c.y)], s);
+            p.line_segment([pos2(r.left(), c.y), pos2(r.left() + w * 0.3, r.bottom() - h * 0.15)], s);
+            p.line_segment([pos2(r.right() - w * 0.3, r.top() + h * 0.15), pos2(r.right(), c.y)], s);
+            p.line_segment([pos2(r.right(), c.y), pos2(r.right() - w * 0.3, r.bottom() - h * 0.15)], s);
+            p.line_segment([pos2(c.x + w * 0.1, r.top()), pos2(c.x - w * 0.1, r.bottom())], s);
         },
     }
 }

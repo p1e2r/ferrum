@@ -20,7 +20,9 @@ On Windows release builds `windows_subsystem = "windows"` hides the console wind
 | `Event` (private) | Work queued by the delegate for `pump` |
 | `Delegate` | Servo's `WebViewDelegate`; queues events, requests redraws |
 | `set_cursor()` | Maps Servo cursors to winit cursors |
-| `Tab` | One tab: optional webview, crash state, zoom, favicon. `title()`, `url()`, `loading()` |
+| `EngineDelegate` | Servo's `ServoDelegate`: blocks and shows notifications for loads not tied to a tab |
+| `Tab` | One tab: optional webview, crash state, zoom, favicon, pinned / muted / playing, console, reader article, page source, last used. `title()`, `url()`, `loading()` |
+| `InternalPage` | Pages Ferrum draws itself: `Settings` (`ferrum://settings`), `Shortcuts` (`ferrum://shortcuts`), `Source` (view source) |
 | `SidePanel` | Which side panel is open |
 | `Browser` | Owns all state (below) |
 | `run_file_picker()` | Answers `<input type=file>` with the system dialog |
@@ -34,6 +36,9 @@ On Windows release builds `windows_subsystem = "windows"` hides the console wind
 | Navigation | `navigate_input`, `navigate`, `go_home`, `go_back`, `go_forward`, `reload` (also recovers crashed tabs), `sync_location` |
 | View | `set_zoom`, `zoom_step` (steps 30%–300%), `toggle_window_fullscreen`, `apply_theme` (UI + `prefers-color-scheme`) |
 | Features | `toggle_bookmark`, `start_download`, `clear_site_data`, `open_private_window`, `toast` |
+| Modern features | `toggle_reader`, `view_source`, `take_screenshot`, `toggle_devtools`, `run_in_console`, `toggle_mute`, `toggle_pin`, `move_tab`, `sleep_idle_tabs`, `check_for_updates`, `import_bookmarks` / `export_bookmarks`, `toggle_site_blocking`, `clear_this_site`, `open_internal` |
+| Permissions | `add_control` (answers remembered permissions), `remember_permission_answer`, free function `feature_key` |
+| Async results | `finish_async_work` picks up reader, source and screenshot results that arrive from Servo callbacks (they wake the loop with `WakeUp`) |
 | Event loop | `pump`, `handle_window_event`, `handle_shortcut`, `forward_to_page`, `redraw` |
 | Popups | `has_popup`, `dismiss_popups`, `toggle_panel` |
 | Helpers | `refresh_favicon`, `in_content`, `page_point`, `mouse_physical`, `egui_ctx` |
@@ -73,6 +78,26 @@ After drawing, if any setting changed the profile is marked for saving and `Brow
 
 **Adding a setting:** add the field to `Settings`, a `Setting` variant, an `ITEMS` entry, and an arm in `setting_control`.
 
+## `features_ui.rs` — interface for newer features
+
+`draw_devtools` (bottom console panel), `draw_site_info` (padlock popup), `draw_notification` (web notification card), `draw_reader` (reader mode in place of the page), `draw_shortcuts_page` (`ferrum://shortcuts`, from the `SHORTCUTS` table).
+
+## `blocker.rs` — ad and tracker blocking
+
+`Blocker` (`should_block`, `count_blocked`, `blocked_on`, `load_list_in_background`), `base_domain`. See [Servo callbacks](Servo-Callbacks#ad-and-tracker-blocking).
+
+## `reader.rs` — reader mode
+
+`SCRIPT` runs in the page and returns the article as JSON: it takes `<article>`, `<main>` or the element with the most paragraph text, skips navigation, asides, footers and ad/share/comment blocks, and lists headings, paragraphs, quotes, list items and code blocks. `ReaderDoc::parse` reads it; `draw` lays it out natively in a centred column with its own toolbar (text size, theme, width, reading time).
+
+## `devtools.rs` — console and page source
+
+`Console` (per tab, at most 1000 messages), `DevTools` (prompt text, history, filter), `draw_console`, `format_value` (a `JSValue` the way a console prints it), `Source` and `draw_source` (line-numbered, colour-highlighted HTML; only the visible lines are laid out).
+
+## `bookmarks_io.rs`, `updates.rs`
+
+`export` / `import` of Netscape bookmark files (folders are flattened; only http/https/file links are imported). `updates::check` asks the GitHub releases API on a background thread and compares versions numerically (`parse_version`).
+
 ## `theme.rs` — colour themes
 
 `ThemePreset` lists the themes. `Ferrum` is the standard egui look and follows the light/dark setting; every other preset has a `Palette` (dark or light, panel, surface, text, suggested accent). `apply` paints an egui `Visuals` from a palette: panels and dialogs use `panel`, the toolbar, text fields and cards use `surface`, and widget fills are blends of panel and text (`mix`). `ui::style` resets both egui styles, applies the preset's palette to the matching one, and switches egui to that mode; `style_key` makes this run only when a look-related setting changes.
@@ -107,4 +132,4 @@ After drawing, if any setting changed the profile is marked for saving and `Brow
 
 ## `icons.rs` — icons
 
-`Icon` (Back, Forward, Reload, Stop, Home, Plus, Close, Menu, Star, StarFilled, Download, Up, Down) and `icon_button(ui, icon, size, enabled, tooltip)`. Icons are drawn from line segments and polygons, so they're crisp at any scale and need no image or icon-font files.
+`Icon` (Back, Forward, Reload, Stop, Home, Plus, Close, Menu, Star, StarFilled, Download, Up, Down, Warning, History, Gear, Lock, Info, Speaker, Muted, Pin, Shield, Reader, Code), `icon_button(ui, icon, size, enabled, tooltip)`, `icon` and `paint_icon`. Icons are drawn from line segments and polygons, so they're crisp at any scale and need no image or icon-font files.

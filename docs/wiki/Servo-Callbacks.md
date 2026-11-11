@@ -19,6 +19,10 @@ enum Event {
     Title(WebView),             // title changed → update history entry
     Favicon(WebViewId),
     Download(Url, Option<Url>), // navigation to a file → download
+    Console(WebViewId, ConsoleLogLevel, String), // console.log etc. → the tab's console
+    Notify(Option<WebViewId>, String, String),   // web notification (title, body)
+    Media(WebViewId, bool),     // media session playing / stopped → speaker icon
+    LoadStarted(WebViewId),     // new page: reset reader mode, console, playing state
 }
 ```
 
@@ -38,6 +42,23 @@ enum Event {
 | `request_navigation` | allow, unless it looks like a file → deny and download |
 | `request_permission`, `request_authentication` | queue a page control |
 | `show_embedder_control` / `hide_embedder_control` | queue / remove a page control |
+| `load_web_resource` | ad and tracker blocking: cancel listed third-party requests (see below) |
+| `show_console_message` | add to the tab's console |
+| `show_notification` | show the notification card |
+| `notify_media_session_event` | playback state → the tab's speaker icon |
+| `request_unload` | queue a "Leave this page?" control |
+
+A second delegate, `EngineDelegate` (Servo's `ServoDelegate`), receives the same `load_web_resource` and `show_notification` calls for loads and notifications that aren't tied to a webview (images fetched by the image cache, workers). It blocks using the request's referrer as the page.
+
+## Ad and tracker blocking
+
+`blocker::Blocker` is shared (`Rc`) by the browser and both delegates. For each request that isn't a main document, `should_block(host, page_host)` checks:
+
+1. blocking is on and the page's host isn't in the exceptions,
+2. the request goes to **another site** — `base_domain` (last two labels, three for `co.uk`-style names) differs,
+3. the host or one of its parent domains is in the list.
+
+Blocked loads are answered with `load.intercept(response).cancel()`, which the page sees as a network error. Blocked addresses are counted per tab and page URL for the padlock badge. The list starts with ~170 built-in domains and adds Peter Lowe's list, loaded from `blocklist.txt` in the profile and re-downloaded on a background thread when it's over a week old.
 
 ## Page controls
 
@@ -51,6 +72,7 @@ pub enum PageControl {
     Select(SelectElement),                          // <select>
     Color { picker, color },                        // <input type=color>
     ContextMenu(ContextMenu),                       // right-click
+    Unload(AllowOrDenyRequest),                     // "Leave this page?"
 }
 pub struct Pending { webview: WebViewId, id: Option<EmbedderControlId>, control: PageControl }
 ```

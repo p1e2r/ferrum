@@ -18,6 +18,7 @@ Ferrum/
 ├── bookmarks.json
 ├── history.json
 ├── session.json
+├── blocklist.txt    ← cached ad/tracker server list (refreshed weekly)
 └── engine/          ← Servo's own data: cookies, localStorage, caches
 ```
 
@@ -53,9 +54,23 @@ All files are pretty-printed JSON. Unknown or missing fields fall back to defaul
   "start_title": "Ferrum",
   "start_background": "Plain",
   "start_image": "",
-  "start_show_clock": false
+  "start_show_clock": false,
+  "block_trackers": true,
+  "blocker_exceptions": ["example.com"],
+  "site_permissions": { "meet.example.com": { "camera": true, "microphone": true } },
+  "check_updates": true,
+  "last_update_check": 1762844400,
+  "sleep_tabs": true,
+  "sleep_minutes": 30,
+  "reader_font_size": 19.0,
+  "reader_theme": "Auto",
+  "reader_width": 720.0
 }
 ```
+
+**session.json** keeps `tabs` (URLs), `titles` and `pinned` as parallel lists plus the `active` index. Page-source tabs aren't saved.
+
+**Remembered permissions.** When a page asks for a permission and the user answers with "Remember" ticked, the answer is stored under the page's host and feature name (`location`, `notifications`, `camera`…). `Browser::add_control` answers later requests from that site straight away. The site info popup and Settings → Privacy list them and can reset them.
 
 Look-related fields (theme, accent, size, density, rounding) are hashed by `style_key` in ui.rs; egui's style is rebuilt only when that hash changes. The start-page image is decoded once per path (and scaled down to at most 2560×1600) and kept as a texture.
 
