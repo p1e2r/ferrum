@@ -22,6 +22,7 @@ pub enum Icon {
     Down,
     Warning,
     History,
+    Gear,
 }
 
 /// A square icon button. Returns the click response.
@@ -139,6 +140,16 @@ fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
             let ink = Color32::WHITE;
             p.line_segment([pos2(c.x, r.top() + h * 0.35), pos2(c.x, r.bottom() - h * 0.32)], Stroke::new(1.6_f32, ink));
             p.circle_filled(pos2(c.x, r.bottom() - h * 0.14), 1.0, ink);
+        },
+        Icon::Gear => {
+            // Eight teeth around a ring.
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                let dir = vec2(a.cos(), a.sin());
+                p.line_segment([c + dir * w * 0.32, c + dir * w * 0.5], Stroke::new(2.2_f32, color));
+            }
+            p.circle_stroke(c, w * 0.32, s);
+            p.circle_filled(c, w * 0.11, color);
         },
         Icon::History => {
             p.circle_stroke(c, w * 0.5, s);

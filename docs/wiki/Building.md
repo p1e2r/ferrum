@@ -52,6 +52,10 @@ Cross-compiles `x86_64-pc-windows-msvc` with [cargo-xwin](https://github.com/rus
 
 On every push to `main` and every pull request, GitHub Actions builds and tests natively on Linux x86_64, Linux arm64, macOS (universal, via `build-macos.sh`) and Windows x86_64, and uploads each package as a workflow artifact.
 
+### Versions
+
+`Cargo.toml` holds the base version. In CI, each build job works out the release version *before* compiling: the base version, or the next free patch number if that version has already been released (0.5.0 → 0.5.1 → …). It's passed to the compiler as `FERRUM_VERSION`, so the app's About page, its file names and the release all show the same number. Bump the major/minor number in `Cargo.toml` for bigger changes. Local builds show `Cargo.toml`'s version.
+
 ### Releases
 
 Every release is a **pre-release** until Ferrum is ready for production:

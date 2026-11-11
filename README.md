@@ -27,7 +27,10 @@ A fast, native desktop web browser written in Rust.
 | Session | Reopens your tabs at start-up, reopen closed tab (Ctrl+Shift+T), crashed-tab recovery |
 | Find in page | Ctrl+F: highlights every match, "3 of 12", Enter / Shift+Enter, match case |
 | Printing | Ctrl+P: captures the whole page into A4 pages, pick a printer and copies, or save as PDF |
-| Customization | Theme, accent colour, interface size, density, corner rounding, tabs on top or down the side, which toolbar buttons show, start page title / background (gradient, colour or your own image) / clock / tiles, custom search engine, what new tabs open |
+| Settings page | `ferrum://settings` (Ctrl+, or ☰ → Settings) in its own tab: sections down the side, search, and every option below |
+| Themes | 10 complete colour themes (Ferrum light/dark, Midnight, Graphite, Forest, Arctic, Plum, Paper, Sky, Rose, High contrast) plus any accent colour |
+| Customization | Interface size, density, corner rounding, tabs on top or down the side, which toolbar buttons show, start page title / background (gradient, colour or your own image) / clock / tiles, custom search engine, what new tabs open, download folder |
+| Privacy & web content | HTTPS-only mode, notification and location permissions, default font size, custom user agent |
 | Theme | System / light / dark; optionally ask websites for their dark style too |
 
 ### Efficiency
@@ -126,7 +129,7 @@ On macOS use ⌘ where it says Ctrl.
 | Ctrl+D | Bookmark page |
 | Ctrl+Shift+B | Toggle bookmarks bar |
 | Ctrl+Shift+O / Ctrl+H / Ctrl+J | Bookmarks / history / downloads panel |
-| Ctrl+, | Settings |
+| Ctrl+, | Settings page |
 | Ctrl +, Ctrl −, Ctrl 0 | Zoom in / out / reset |
 | F11 | Full screen |
 | Esc | Close menu or popup, leave page full screen |
@@ -147,6 +150,8 @@ Settings, bookmarks, history and the last session are small JSON files; cookies 
 src/main.rs       start-up, command line, event loop
 src/browser.rs    window, tabs, Servo callbacks, input, shortcuts
 src/ui.rs         the interface: tabs, toolbar, menus, panels, page dialogs
+src/settings_page.rs  the settings page (ferrum://settings)
+src/theme.rs      colour themes
 src/profile.rs    settings, bookmarks, history, session (JSON)
 src/downloads.rs  download manager
 src/find.rs       find in page

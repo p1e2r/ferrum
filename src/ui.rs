@@ -19,7 +19,7 @@ use url::Url;
 use crate::browser::{APP_NAME, Browser, PageControl, SidePanel};
 use crate::downloads::{Status, human_size, open_path};
 use crate::icons::{Icon, icon, icon_button};
-use crate::profile::{DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, ThemeChoice};
+use crate::profile::{Settings, StartBackground, TabLayout, ThemeChoice};
 
 pub fn accent(settings: &Settings) -> Color32 {
     let [r, g, b] = settings.accent;
@@ -31,7 +31,7 @@ pub fn accent(settings: &Settings) -> Color32 {
 fn style_key(s: &Settings) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness).hash(&mut h);
+    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness).hash(&mut h);
     h.finish().max(1)
 }
 
@@ -41,7 +41,18 @@ pub fn style(ctx: &egui::Context, settings: &Settings) {
         o.zoom_with_keyboard = false;
         o.fallback_theme = egui::Theme::Light;
     });
-    set_theme(ctx, settings.theme);
+    // Start both light and dark styles from the defaults, then apply the theme.
+    ctx.set_style_of(egui::Theme::Light, egui::Style { visuals: egui::Visuals::light(), ..Default::default() });
+    ctx.set_style_of(egui::Theme::Dark, egui::Style { visuals: egui::Visuals::dark(), ..Default::default() });
+    match settings.theme_preset.palette() {
+        Some(palette) => {
+            let mode = if palette.dark { egui::Theme::Dark } else { egui::Theme::Light };
+            let high_contrast = settings.theme_preset == crate::theme::ThemePreset::HighContrast;
+            ctx.style_mut_of(mode, |style| crate::theme::apply(&mut style.visuals, &palette, high_contrast));
+            ctx.set_theme(mode);
+        },
+        None => set_theme(ctx, settings.theme),
+    }
     ctx.set_zoom_factor(settings.ui_scale.clamp(0.7, 1.6));
     let accent = accent(settings);
     let r = CornerRadius::same(settings.roundness);
@@ -509,7 +520,9 @@ impl Browser {
 
     /// Favicon, spinner, crash marker or letter tile for a tab.
     fn tab_icon(&self, ui: &mut Ui, tab: &crate::browser::Tab) {
-        if tab.crashed.is_some() {
+        if tab.internal.is_some() {
+            icon(ui, Icon::Gear, 16.0, ui.visuals().strong_text_color());
+        } else if tab.crashed.is_some() {
             icon(ui, Icon::Warning, 16.0, Color32::from_rgb(220, 60, 60));
         } else if tab.loading() {
             ui.add(egui::Spinner::new().size(14.0).color(self.accent()));
@@ -740,7 +753,7 @@ impl Browser {
             i.pointer.interact_pos().is_some_and(|p| self.suggestion_rect.contains(p))
                 && (i.pointer.any_down() || i.pointer.any_released())
         });
-        if self.editing && (url_focused || pointer_on_list) {
+        if self.editing && self.profile.settings.show_suggestions && (url_focused || pointer_on_list) {
             self.draw_suggestions(ui.ctx(), url_rect);
         } else {
             self.suggestion_rect = egui::Rect::NOTHING;
@@ -865,6 +878,10 @@ impl Browser {
             return;
         }
 
+        if self.active_tab().internal == Some(crate::browser::InternalPage::Settings) {
+            self.draw_settings_page(ui, rect);
+            return;
+        }
         let Some(webview) = self.active_webview().cloned() else {
             self.draw_start_page(ui, rect);
             return;
@@ -1065,7 +1082,9 @@ impl Browser {
         let btn = egui::Rect::from_min_size(rect.right_bottom() - vec2(120.0, 40.0), vec2(110.0, 30.0));
         let resp = ui.put(btn, egui::Button::new(RichText::new("Customize").size(12.0)));
         if resp.clicked() {
-            self.panel = SidePanel::Settings;
+            self.settings_section = crate::settings_page::Section::Appearance;
+            self.settings_query.clear();
+            self.open_settings();
         }
 
         if let Some((target, new_tab)) = go {
@@ -1435,7 +1454,8 @@ impl Browser {
                     }
                     ui.separator();
                     if row(ui, "Settings", "Ctrl+,") {
-                        self.toggle_panel(SidePanel::Settings);
+                        self.open_settings();
+                        close = true;
                     }
                     if row(ui, "Quit", "") {
                         self.window.request_redraw();
@@ -1491,7 +1511,6 @@ impl Browser {
                         SidePanel::History => "History",
                         SidePanel::Bookmarks => "Bookmarks",
                         SidePanel::Downloads => "Downloads",
-                        SidePanel::Settings => "Settings",
                         SidePanel::None => "",
                     };
                     ui.label(RichText::new(title).size(18.0).strong());
@@ -1506,7 +1525,6 @@ impl Browser {
                     SidePanel::History => self.draw_history(ui),
                     SidePanel::Bookmarks => self.draw_bookmarks(ui),
                     SidePanel::Downloads => self.draw_downloads(ui),
-                    SidePanel::Settings => self.draw_settings(ui),
                     SidePanel::None => {},
                 }
             });
@@ -1657,7 +1675,7 @@ impl Browser {
             if ui.button("Clear finished").clicked() {
                 self.downloads.clear_finished();
             }
-            if let Some(dir) = dirs::download_dir() {
+            if let Some(dir) = self.download_dir() {
                 if ui.button("Open downloads folder").clicked() {
                     open_path(&dir);
                 }
@@ -1715,211 +1733,6 @@ impl Browser {
         });
         if running {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
-        }
-    }
-
-    fn draw_settings(&mut self, ui: &mut Ui) {
-        let before = format!("{:?}", self.profile.settings);
-        let mut clear_history = false;
-        let mut clear_data = false;
-        let accent_now = self.accent();
-
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            let s = &mut self.profile.settings;
-            let section = |ui: &mut Ui, title: &str, open: bool, body: &mut dyn FnMut(&mut Ui)| {
-                egui::CollapsingHeader::new(RichText::new(title).strong()).default_open(open).show(ui, |ui| {
-                    body(ui);
-                    ui.add_space(4.0);
-                });
-            };
-
-            section(ui, "Look", true, &mut |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Theme");
-                    ui.selectable_value(&mut s.theme, ThemeChoice::System, "System");
-                    ui.selectable_value(&mut s.theme, ThemeChoice::Light, "Light");
-                    ui.selectable_value(&mut s.theme, ThemeChoice::Dark, "Dark");
-                });
-                ui.checkbox(&mut s.dark_websites, "Dark websites too")
-                    .on_hover_text("Ask websites for their dark style when the interface is dark. Some sites that don't support dark mode may become hard to read.");
-                ui.label("Accent colour");
-                ui.horizontal_wrapped(|ui| {
-                    const PRESETS: [[u8; 3]; 9] = [
-                        DEFAULT_ACCENT,
-                        [214, 62, 62],
-                        [226, 160, 30],
-                        [64, 160, 90],
-                        [32, 150, 160],
-                        [52, 110, 220],
-                        [110, 80, 210],
-                        [196, 70, 160],
-                        [110, 115, 125],
-                    ];
-                    for preset in PRESETS {
-                        let color = Color32::from_rgb(preset[0], preset[1], preset[2]);
-                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
-                        ui.painter().circle_filled(r.center(), 10.0, color);
-                        if s.accent == preset {
-                            ui.painter().circle_stroke(r.center(), 11.5, egui::Stroke::new(2.0_f32, ui.visuals().strong_text_color()));
-                        }
-                        if resp.clicked() {
-                            s.accent = preset;
-                        }
-                    }
-                    let mut c = Color32::from_rgb(s.accent[0], s.accent[1], s.accent[2]);
-                    if ui.color_edit_button_srgba(&mut c).on_hover_text("Custom colour").changed() {
-                        s.accent = [c.r(), c.g(), c.b()];
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Interface size");
-                    ui.add(egui::Slider::new(&mut s.ui_scale, 0.8..=1.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Corner rounding");
-                    ui.add(egui::Slider::new(&mut s.roundness, 0..=14));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Density");
-                    ui.selectable_value(&mut s.compact, false, "Comfortable");
-                    ui.selectable_value(&mut s.compact, true, "Compact");
-                });
-            });
-
-            section(ui, "Tabs & toolbar", true, &mut |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Tabs");
-                    ui.selectable_value(&mut s.tab_layout, TabLayout::Top, "Along the top");
-                    ui.selectable_value(&mut s.tab_layout, TabLayout::Vertical, "Down the side");
-                });
-                ui.checkbox(&mut s.show_bookmarks_bar, "Bookmarks bar");
-                ui.checkbox(&mut s.show_home_button, "Home button");
-                ui.checkbox(&mut s.show_bookmark_button, "Bookmark star");
-                ui.checkbox(&mut s.show_downloads_button, "Downloads button (always shown while downloading)");
-            });
-
-            section(ui, "Start page", true, &mut |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Title");
-                    ui.add(egui::TextEdit::singleline(&mut s.start_title).desired_width(180.0));
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Background");
-                    ui.selectable_value(&mut s.start_background, StartBackground::Plain, "Plain");
-                    ui.selectable_value(&mut s.start_background, StartBackground::Gradient, "Accent gradient");
-                    ui.selectable_value(&mut s.start_background, StartBackground::Color, "Colour");
-                    ui.selectable_value(&mut s.start_background, StartBackground::Image, "Image");
-                });
-                match s.start_background {
-                    StartBackground::Color => {
-                        ui.horizontal(|ui| {
-                            ui.label("Colour");
-                            let mut c = Color32::from_rgb(s.start_color[0], s.start_color[1], s.start_color[2]);
-                            if ui.color_edit_button_srgba(&mut c).changed() {
-                                s.start_color = [c.r(), c.g(), c.b()];
-                            }
-                        });
-                    },
-                    StartBackground::Image => {
-                        ui.horizontal(|ui| {
-                            if ui.button("Choose image…").clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "bmp"])
-                                    .pick_file()
-                                {
-                                    s.start_image = path.to_string_lossy().into_owned();
-                                }
-                            }
-                            if !s.start_image.is_empty() && ui.button("Remove").clicked() {
-                                s.start_image.clear();
-                            }
-                        });
-                        let name = std::path::Path::new(&s.start_image)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "No image chosen".into());
-                        ui.label(RichText::new(name).weak().size(12.0));
-                    },
-                    _ => {},
-                }
-                ui.checkbox(&mut s.start_show_clock, "Clock and date");
-                ui.checkbox(&mut s.start_show_bookmarks, "Bookmark tiles");
-                ui.checkbox(&mut s.start_show_frequent, "Frequently visited tiles");
-            });
-
-            section(ui, "Search", false, &mut |ui| {
-                egui::ComboBox::from_id_salt("engine").selected_text(s.search_engine.name()).show_ui(ui, |ui| {
-                    for e in SearchEngine::ALL {
-                        ui.selectable_value(&mut s.search_engine, e, e.name());
-                    }
-                });
-                if s.search_engine == SearchEngine::Custom {
-                    ui.label(RichText::new("Search URL — use %s where the search words go").size(12.0));
-                    ui.add(egui::TextEdit::singleline(&mut s.custom_search_url).hint_text("https://example.com/search?q=%s").desired_width(f32::INFINITY));
-                    if !s.custom_search_url.contains("%s") {
-                        ui.label(RichText::new("Needs %s — using DuckDuckGo until then").size(11.0).color(Color32::from_rgb(210, 120, 40)));
-                    }
-                }
-            });
-
-            section(ui, "Start-up & new tabs", false, &mut |ui| {
-                ui.checkbox(&mut s.restore_session, "Reopen tabs from last time");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("New tabs open");
-                    ui.selectable_value(&mut s.new_tab_page, NewTabPage::StartPage, "Start page");
-                    ui.selectable_value(&mut s.new_tab_page, NewTabPage::HomePage, "Home page");
-                    ui.selectable_value(&mut s.new_tab_page, NewTabPage::Blank, "Blank");
-                });
-                ui.label("Home page (empty = start page)");
-                ui.add(egui::TextEdit::singleline(&mut s.home_page).hint_text("https://…").desired_width(f32::INFINITY));
-                ui.horizontal(|ui| {
-                    ui.label("Default page zoom");
-                    ui.add(egui::Slider::new(&mut s.default_zoom, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
-                });
-            });
-
-            section(ui, "Downloads", false, &mut |ui| {
-                ui.checkbox(&mut s.ask_where_to_save, "Ask where to save each file");
-            });
-
-            section(ui, "Privacy", false, &mut |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    clear_history = ui.button("Clear history").clicked();
-                    clear_data = ui.button("Clear cookies & site data").clicked();
-                });
-            });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Reset look to defaults").clicked() {
-                    let d = crate::profile::Settings::default();
-                    s.theme = d.theme;
-                    s.accent = d.accent;
-                    s.ui_scale = d.ui_scale;
-                    s.compact = d.compact;
-                    s.roundness = d.roundness;
-                    s.tab_layout = d.tab_layout;
-                    s.start_background = d.start_background;
-                    s.start_title = d.start_title;
-                }
-            });
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!("{APP_NAME} {} · Servo engine · MIT licensed", env!("CARGO_PKG_VERSION")))
-                    .color(accent_now)
-                    .size(11.0),
-            );
-        });
-
-        if clear_history {
-            self.profile.clear_history();
-            self.toast("History cleared");
-        }
-        if clear_data {
-            self.clear_site_data();
-        }
-        if format!("{:?}", self.profile.settings) != before {
-            self.profile.mark_dirty();
         }
     }
 

@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+use crate::theme::ThemePreset;
 use url::Url;
 
 const MAX_HISTORY: usize = 5000;
@@ -123,7 +125,26 @@ pub struct Settings {
     pub default_zoom: f32,
     pub ask_where_to_save: bool,
 
+    /// Show bookmark and history matches under the address bar while typing.
+    pub show_suggestions: bool,
+    /// Where downloads are saved; empty = the system Downloads folder.
+    pub download_dir: String,
+
+    // Privacy & web content (passed to the engine)
+    /// Only load pages over HTTPS.
+    pub https_only: bool,
+    /// Let sites ask to show notifications.
+    pub allow_notifications: bool,
+    /// Let sites ask for your location.
+    pub allow_location: bool,
+    /// Default page font size in CSS pixels.
+    pub font_size: u8,
+    /// Custom User-Agent string; empty = the engine's default.
+    pub user_agent: String,
+
     // Look
+    pub theme_preset: ThemePreset,
+    /// Light/dark mode for the Ferrum theme (other themes have their own).
     pub theme: ThemeChoice,
     /// Tell websites to use their dark style when the interface is dark.
     pub dark_websites: bool,
@@ -161,6 +182,14 @@ impl Default for Settings {
             restore_session: true,
             default_zoom: 1.0,
             ask_where_to_save: false,
+            show_suggestions: true,
+            download_dir: String::new(),
+            https_only: false,
+            allow_notifications: false,
+            allow_location: false,
+            font_size: 16,
+            user_agent: String::new(),
+            theme_preset: ThemePreset::default(),
             theme: ThemeChoice::default(),
             dark_websites: false,
             accent: DEFAULT_ACCENT,
@@ -276,6 +305,11 @@ impl Profile {
             ];
         }
         profile
+    }
+
+    /// The profile folder (`None` in a private window).
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.as_deref()
     }
 
     pub fn is_private(&self) -> bool {

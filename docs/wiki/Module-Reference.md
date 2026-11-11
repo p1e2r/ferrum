@@ -63,6 +63,24 @@ All functions are `impl Browser` methods called from `draw`, in this order:
 
 Helpers: `style` (applies theme, accent, interface size, density and rounding from `Settings`; only re-run when `style_key` changes) / `set_theme`, `letter_icon` (coloured letter tile when there's no favicon), `link_row` (row with hover ✕ used by history and bookmarks), `truncate`, `host_of`.
 
+## `settings_page.rs` — the settings page
+
+`ferrum://settings` (aliases `about:settings`, `about:preferences`) is an *internal page*: a tab with `internal: Some(InternalPage::Settings)` and no webview, drawn by `Browser::draw_settings_page`. `Browser::open_settings` switches to it or opens it.
+
+Every setting is one entry in `ITEMS`: its `Section`, a `Setting` id, label, description, search keywords, and whether its control sits beside the text or under it (`wide`). The page shows the selected section, or, while the search box has text, every item whose label, description, keywords or section name contains all the search words. `Browser::setting_control` draws each control (a `match` on `Setting`); `visible` hides settings that depend on another (e.g. the custom search address only for the Custom engine). Helpers: `toggle` (animated switch), `segmented`, `card`, `row`.
+
+After drawing, if any setting changed the profile is marked for saving and `Browser::apply_engine_settings` sends changed engine preferences to Servo.
+
+**Adding a setting:** add the field to `Settings`, a `Setting` variant, an `ITEMS` entry, and an arm in `setting_control`.
+
+## `theme.rs` — colour themes
+
+`ThemePreset` lists the themes. `Ferrum` is the standard egui look and follows the light/dark setting; every other preset has a `Palette` (dark or light, panel, surface, text, suggested accent). `apply` paints an egui `Visuals` from a palette: panels and dialogs use `panel`, the toolbar, text fields and cards use `surface`, and widget fills are blends of panel and text (`mix`). `ui::style` resets both egui styles, applies the preset's palette to the matching one, and switches egui to that mode; `style_key` makes this run only when a look-related setting changes.
+
+## Engine settings
+
+`browser::engine_prefs` maps Ferrum settings to Servo preferences: HTTPS-only (`network_enforce_tls_enabled`), notifications (`dom_notification_enabled`), location (`dom_geolocation_enabled`), font size (`fonts_default_size`) and user agent (`user_agent`; empty = Servo's default, remembered at start-up). They're set in `Preferences` at start-up and sent with `Servo::set_preference` when changed, taking effect for pages loaded afterwards.
+
 ## `profile.rs` — settings and data
 
 `ThemeChoice`, `SearchEngine` (with `name`, `search_url`), `Settings`, `Bookmark`, `HistoryEntry`, and `Profile` with `load`, `flush`, `mark_dirty`, `load_session`/`save_session`, bookmark and history helpers, and `suggestions`. See [Profile and data](Profile-and-Data).

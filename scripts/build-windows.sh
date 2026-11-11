@@ -17,7 +17,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 TARGET=x86_64-pc-windows-msvc
-VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+VERSION=${FERRUM_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}
 
 command -v cargo-xwin >/dev/null || { echo "Installing cargo-xwin"; cargo install cargo-xwin --locked; }
 rustup target add "$TARGET" >/dev/null

@@ -32,7 +32,7 @@ use crate::find::FindState;
 use crate::print::{self, PrintJob};
 use crate::keys::keyboard_event;
 use crate::location::input_to_url;
-use crate::profile::{NewTabPage, Profile, ThemeChoice};
+use crate::profile::{NewTabPage, Profile};
 
 pub const APP_NAME: &str = "Ferrum";
 const ZOOM_STEPS: [f32; 13] = [0.3, 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
@@ -239,7 +239,39 @@ fn set_cursor(window: &Window, cursor: Cursor) {
 // Browser state
 // ---------------------------------------------------------------------------
 
-/// A tab is either a live Servo webview or the native start page.
+/// Pages drawn by Ferrum itself rather than loaded by the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InternalPage {
+    Settings,
+}
+
+impl InternalPage {
+    pub const SETTINGS_URL: &'static str = "ferrum://settings";
+
+    /// `ferrum://settings`, or the `about:settings` / `about:preferences` aliases.
+    pub fn from_url(url: &Url) -> Option<Self> {
+        match (url.scheme(), url.host_str().unwrap_or(""), url.path()) {
+            ("ferrum", "settings", _) => Some(InternalPage::Settings),
+            ("about", _, "settings" | "preferences") => Some(InternalPage::Settings),
+            _ => None,
+        }
+    }
+
+    pub fn url(self) -> Url {
+        match self {
+            InternalPage::Settings => Url::parse(Self::SETTINGS_URL).expect("valid URL"),
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            InternalPage::Settings => "Settings",
+        }
+    }
+}
+
+/// A tab is a live Servo webview, a page drawn by Ferrum (settings), or the
+/// native start page.
 pub struct Tab {
     pub webview: Option<WebView>,
     pub crashed: Option<String>,
@@ -254,6 +286,8 @@ pub struct Tab {
     /// A restored tab that hasn't been opened yet: its page loads the first
     /// time the tab is selected, so start-up only loads the active tab.
     pub pending: Option<(Url, String)>,
+    /// A page drawn by Ferrum, such as settings.
+    pub internal: Option<InternalPage>,
 }
 
 impl Tab {
@@ -267,6 +301,7 @@ impl Tab {
             upgraded_to_https: false,
             retries_left: 1,
             pending: None,
+            internal: None,
         }
     }
 
@@ -275,6 +310,9 @@ impl Tab {
     }
 
     pub fn title(&self) -> String {
+        if let Some(page) = self.internal {
+            return page.title().to_string();
+        }
         if let Some((url, title)) = &self.pending {
             return if title.trim().is_empty() { url.host_str().unwrap_or(url.as_str()).to_string() } else { title.clone() };
         }
@@ -289,6 +327,9 @@ impl Tab {
     }
 
     pub fn url(&self) -> Option<Url> {
+        if let Some(page) = self.internal {
+            return Some(page.url());
+        }
         if let Some((url, _)) = &self.pending {
             return Some(url.clone());
         }
@@ -306,7 +347,6 @@ pub enum SidePanel {
     History,
     Bookmarks,
     Downloads,
-    Settings,
 }
 
 pub struct Browser {
@@ -351,6 +391,12 @@ pub struct Browser {
     /// When the interface next needs a repaint (set by egui's repaint callback).
     repaint_at: Arc<Mutex<Option<Instant>>>,
     last_title: String,
+    /// The engine's own User-Agent, used when no custom one is set.
+    default_user_agent: String,
+    /// Engine preferences last sent to Servo, to send only changes.
+    engine_applied: Vec<(&'static str, servo::PrefValue)>,
+    pub(crate) settings_section: crate::settings_page::Section,
+    pub(crate) settings_query: String,
 
     // Page geometry (egui points) and input
     pub(crate) content_rect: egui::Rect,
@@ -410,6 +456,10 @@ impl Browser {
         // WebGL 2 is off in Servo's defaults, but current three.js and most 3D
         // sites require it.
         let mut preferences = servo::Preferences::default();
+        let default_user_agent = preferences.user_agent.clone();
+        for (name, value) in engine_prefs(&profile.settings, &default_user_agent) {
+            preferences.set_value(name, value);
+        }
         preferences.dom_webgl2_enabled = true;
         // Servo disables "happy eyeballs" and splits this timeout across every
         // address a host resolves to; a longer budget avoids spurious
@@ -458,6 +508,7 @@ impl Browser {
             let _ = notify_window.send_event(WakeUp);
         }));
 
+        let profile_settings_for_engine = profile.settings.clone();
         let mut browser = Self {
             window,
             window_context,
@@ -490,6 +541,10 @@ impl Browser {
             print_job: None,
             repaint_at,
             last_title: String::new(),
+            engine_applied: engine_prefs(&profile_settings_for_engine, &default_user_agent),
+            default_user_agent,
+            settings_section: Default::default(),
+            settings_query: String::new(),
             content_rect: egui::Rect::NOTHING,
             ppp: 1.0,
             mouse: None,
@@ -514,6 +569,7 @@ impl Browser {
         if browser.tabs.is_empty() {
             browser.open_home_tab();
         }
+        browser.downloads.dir = browser.download_dir();
         crate::timing("tabs opened");
         browser
     }
@@ -583,10 +639,14 @@ impl Browser {
         self.active = index.min(self.tabs.len().saturating_sub(1));
         // A restored tab loads its page the first time it's shown.
         if let Some((url, _)) = self.tabs.get_mut(self.active).and_then(|t| t.pending.take()) {
-            let zoom = self.tabs[self.active].zoom;
-            let webview = self.create_webview(url);
-            webview.set_page_zoom(zoom);
-            self.tabs[self.active].webview = Some(webview);
+            if let Some(page) = InternalPage::from_url(&url) {
+                self.tabs[self.active].internal = Some(page);
+            } else {
+                let zoom = self.tabs[self.active].zoom;
+                let webview = self.create_webview(url);
+                webview.set_page_zoom(zoom);
+                self.tabs[self.active].webview = Some(webview);
+            }
         }
         for (i, tab) in self.tabs.iter().enumerate() {
             if let Some(webview) = &tab.webview {
@@ -687,7 +747,17 @@ impl Browser {
         self.find.reset();
         self.editing = false;
         self.suggestion_index = None;
+        if let Some(page) = InternalPage::from_url(&url) {
+            let tab = &mut self.tabs[self.active];
+            tab.webview = None;
+            tab.crashed = None;
+            tab.favicon = None;
+            tab.internal = Some(page);
+            self.activate(self.active);
+            return;
+        }
         let tab = &mut self.tabs[self.active];
+        tab.internal = None;
         tab.crashed = None;
         tab.upgraded_to_https = false;
         tab.retries_left = 1;
@@ -717,11 +787,7 @@ impl Browser {
         if self.editing {
             return;
         }
-        self.location = self
-            .active_webview()
-            .and_then(|webview| webview.url())
-            .map(|url| url.to_string())
-            .unwrap_or_default();
+        self.location = self.tabs.get(self.active).and_then(|t| t.url()).map(|url| url.to_string()).unwrap_or_default();
     }
 
     pub(crate) fn go_back(&mut self) {
@@ -836,13 +902,10 @@ impl Browser {
 
     /// Re-apply the theme to the UI and to pages (`prefers-color-scheme`).
     pub(crate) fn apply_theme(&mut self, ctx: &egui::Context) {
-        let ui_theme = match self.profile.settings.theme {
-            ThemeChoice::Light => servo::Theme::Light,
-            ThemeChoice::Dark => servo::Theme::Dark,
-            ThemeChoice::System => match ctx.theme() {
-                egui::Theme::Dark => servo::Theme::Dark,
-                egui::Theme::Light => servo::Theme::Light,
-            },
+        // The interface's current mode (set by the theme or the light/dark setting).
+        let ui_theme = match ctx.theme() {
+            egui::Theme::Dark => servo::Theme::Dark,
+            egui::Theme::Light => servo::Theme::Light,
         };
         // Servo darkens even pages that don't support dark mode, so this is opt-in.
         let theme = if self.profile.settings.dark_websites { ui_theme } else { servo::Theme::Light };
@@ -948,6 +1011,7 @@ impl Browser {
     /// before leaving the error showing. Returns true if a new load was started.
     fn recover_failed_load(&mut self, webview: &WebView) -> bool {
         let Some(i) = self.tab_index(webview.id()) else { return false };
+        let https_only = self.profile.settings.https_only;
         let failed = webview.page_title().as_deref() == Some("Error loading page");
         let tab = &mut self.tabs[i];
         if !failed {
@@ -955,7 +1019,7 @@ impl Browser {
             return false;
         }
         let Some(url) = webview.url() else { return false };
-        if tab.upgraded_to_https && url.scheme() == "https" {
+        if tab.upgraded_to_https && !https_only && url.scheme() == "https" {
             tab.upgraded_to_https = false;
             let mut http = url.clone();
             if http.set_scheme("http").is_ok() {
@@ -1086,7 +1150,7 @@ impl Browser {
             (_, "h") if cmd => self.toggle_panel(SidePanel::History),
             (_, "j") if cmd => self.toggle_panel(SidePanel::Downloads),
             (_, "o") if cmd && shift => self.toggle_panel(SidePanel::Bookmarks),
-            (_, ",") if cmd => self.toggle_panel(SidePanel::Settings),
+            (_, ",") if cmd => self.open_settings(),
             (_, "=" | "+") if cmd => self.zoom_step(true),
             (_, "-") if cmd => self.zoom_step(false),
             (_, "0") if cmd => self.set_zoom(1.0),
@@ -1126,6 +1190,38 @@ impl Browser {
             _ => return false,
         }
         true
+    }
+
+    /// Send changed engine settings to Servo. They apply to pages loaded afterwards.
+    pub(crate) fn apply_engine_settings(&mut self) {
+        let prefs = engine_prefs(&self.profile.settings, &self.default_user_agent);
+        for (name, value) in &prefs {
+            let changed = self.engine_applied.iter().find(|(n, _)| n == name).is_none_or(|(_, v)| v != value);
+            if changed {
+                self.servo.set_preference(name, value.clone());
+            }
+        }
+        self.engine_applied = prefs;
+        self.downloads.dir = self.download_dir();
+    }
+
+    /// The folder downloads go to.
+    pub(crate) fn download_dir(&self) -> Option<std::path::PathBuf> {
+        let custom = self.profile.settings.download_dir.trim();
+        if custom.is_empty() { dirs::download_dir() } else { Some(custom.into()) }
+    }
+
+    /// Switch to the settings tab, opening one if needed.
+    pub(crate) fn open_settings(&mut self) {
+        self.menu_open = false;
+        if let Some(i) = self.tabs.iter().position(|t| t.internal == Some(InternalPage::Settings)) {
+            self.activate(i);
+            return;
+        }
+        let mut tab = Tab::new(None, self.profile.settings.default_zoom);
+        tab.internal = Some(InternalPage::Settings);
+        self.tabs.insert(self.active + 1, tab);
+        self.activate(self.active + 1);
     }
 
     pub(crate) fn toggle_panel(&mut self, panel: SidePanel) {
@@ -1372,6 +1468,19 @@ impl Drop for Browser {
             egui.destroy();
         }
     }
+}
+
+/// Engine preferences that come from Ferrum's settings.
+pub(crate) fn engine_prefs(settings: &crate::profile::Settings, default_user_agent: &str) -> Vec<(&'static str, servo::PrefValue)> {
+    use servo::PrefValue::{Bool, Int, Str};
+    let user_agent = settings.user_agent.trim();
+    vec![
+        ("network_enforce_tls_enabled", Bool(settings.https_only)),
+        ("dom_notification_enabled", Bool(settings.allow_notifications)),
+        ("dom_geolocation_enabled", Bool(settings.allow_location)),
+        ("fonts_default_size", Int(settings.font_size.clamp(9, 32) as i64)),
+        ("user_agent", Str(if user_agent.is_empty() { default_user_agent.to_string() } else { user_agent.to_string() })),
+    ]
 }
 
 fn run_file_picker(mut picker: FilePicker) {

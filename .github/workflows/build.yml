@@ -40,6 +40,26 @@ jobs:
         with:
           key: ${{ matrix.name }}
 
+      # Work out this build's version before compiling, so the app, its file
+      # names and the release all agree (see the release job below).
+      - name: Pick the version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            base=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+            IFS=. read -r major minor patch <<< "$base"
+            while gh release view "v$major.$minor.$patch" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; do
+              patch=$((patch + 1))
+            done
+            version="$major.$minor.$patch"
+          fi
+          echo "FERRUM_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Building Ferrum $version"
+
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -73,7 +93,7 @@ jobs:
           cargo build --release
           mkdir -p pkg/ferrum dist
           cp target/release/ferrum README.md LICENSE pkg/ferrum/
-          tar -C pkg -czf dist/ferrum-${{ matrix.name }}.tar.gz ferrum
+          tar -C pkg -czf dist/ferrum-$FERRUM_VERSION-${{ matrix.name }}.tar.gz ferrum
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -86,7 +106,7 @@ jobs:
           cargo build --release
           mkdir -p pkg/Ferrum dist
           cp target/release/ferrum.exe README.md LICENSE pkg/Ferrum/
-          cd pkg && 7z a ../dist/ferrum-${{ matrix.name }}.zip Ferrum
+          cd pkg && 7z a ../dist/ferrum-$FERRUM_VERSION-${{ matrix.name }}.zip Ferrum
 
       - uses: actions/upload-artifact@v4
         with:

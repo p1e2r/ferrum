@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ "$(uname)" == "Darwin" ]] || { echo "build-macos.sh must run on macOS"; exit 1; }
 
-VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+VERSION=${FERRUM_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}
 DIST=dist
 APP="$DIST/Ferrum.app"
 ARCHS=(aarch64-apple-darwin x86_64-apple-darwin)

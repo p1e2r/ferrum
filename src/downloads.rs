@@ -46,6 +46,8 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 pub struct Downloads {
     pub items: Vec<Download>,
+    /// Where files are saved; `None` = the system Downloads folder.
+    pub dir: Option<PathBuf>,
     notify: Notify,
 }
 
@@ -121,7 +123,7 @@ fn unique_path(dir: &Path, name: &str) -> PathBuf {
 
 impl Downloads {
     pub fn new(notify: Notify) -> Self {
-        Self { items: Vec::new(), notify }
+        Self { items: Vec::new(), dir: None, notify }
     }
 
     pub fn active_count(&self) -> usize {
@@ -145,10 +147,11 @@ impl Downloads {
         self.items.push(Download { url: url.clone(), progress: progress.clone(), cancel: cancel.clone() });
 
         let notify = self.notify.clone();
+        let dir = self.dir.clone();
         std::thread::Builder::new()
             .name("ferrum-download".into())
             .spawn(move || {
-                let result = run(&url, cookies, referer, target, &progress, &cancel, &notify);
+                let result = run(&url, cookies, referer, target, dir, &progress, &cancel, &notify);
                 if let Ok(mut p) = progress.lock() {
                     p.status = match result {
                         Ok(()) => Status::Done,
@@ -168,13 +171,14 @@ fn run(
     cookies: Option<String>,
     referer: Option<String>,
     target: Option<PathBuf>,
+    dir: Option<PathBuf>,
     progress: &Mutex<Progress>,
     cancel: &AtomicBool,
     notify: &Notify,
 ) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(20)))
-        .user_agent(concat!("Ferrum/", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("Ferrum/{}", crate::VERSION))
         .build()
         .into();
     let mut request = agent.get(url);
@@ -195,9 +199,11 @@ fn run(
     let path = match target {
         Some(p) => p,
         None => {
-            let dir = dirs::download_dir()
+            let dir = dir
+                .or_else(dirs::download_dir)
                 .or_else(dirs::home_dir)
                 .ok_or("No downloads folder found")?;
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             unique_path(&dir, &sanitize(&name))
         },
     };

@@ -20,6 +20,8 @@ mod keys;
 mod location;
 mod print;
 mod profile;
+mod settings_page;
+mod theme;
 mod ui;
 
 use std::error::Error;
@@ -30,6 +32,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::browser::Browser;
+
+/// Ferrum's version. Release builds get it from CI (`FERRUM_VERSION`), so the
+/// app, its download and its release page agree; local builds use Cargo.toml's.
+pub const VERSION: &str = match option_env!("FERRUM_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// Start-up timing: run with `FERRUM_TIMING=1` to print how long each phase takes.
 pub fn timing(label: &str) {
@@ -75,7 +84,7 @@ fn parse_args() -> Args {
                 std::process::exit(0);
             },
             "--version" | "-V" => {
-                println!("ferrum {}", env!("CARGO_PKG_VERSION"));
+                println!("ferrum {VERSION}");
                 std::process::exit(0);
             },
             other if !other.starts_with('-') => args.url = Some(other.to_string()),
@@ -127,7 +136,7 @@ impl ApplicationHandler<WakeUp> for App {
 }
 
 /// Where crash reports go: `<data dir>/Ferrum/crash.log`.
-fn crash_log_path() -> std::path::PathBuf {
+pub fn crash_log_path() -> std::path::PathBuf {
     dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("Ferrum").join("crash.log")
 }
 
@@ -148,7 +157,7 @@ fn install_crash_reporter() {
         let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
         let report = format!(
             "Ferrum {} crashed\nOS: {} {}\nThread: {thread_name}\nError: {message}\nAt: {location}\n\n{}\n",
-            env!("CARGO_PKG_VERSION"),
+            VERSION,
             std::env::consts::OS,
             std::env::consts::ARCH,
             std::backtrace::Backtrace::force_capture(),

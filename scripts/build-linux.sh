@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v docker >/dev/null || { echo "Docker is required (Docker Desktop, OrbStack or Colima)"; exit 1; }
 
-VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+VERSION=${FERRUM_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}
 read -r -a ARCHS <<< "${ARCHS:-amd64 arm64}"
 mkdir -p dist
 
@@ -24,7 +24,7 @@ for arch in "${ARCHS[@]}"; do
   docker build --platform "linux/$arch" -t "$image" -f docker/Dockerfile.linux docker
 
   echo "==> Building Ferrum $VERSION for Linux ($arch)"
-  docker run --rm --platform "linux/$arch" \
+  docker run --rm --platform "linux/$arch" -e FERRUM_VERSION="$VERSION" \
     -v "$(pwd)":/src \
     -v "ferrum-cargo-registry:/usr/local/cargo/registry" \
     -v "ferrum-target-$arch:/src/target" \
