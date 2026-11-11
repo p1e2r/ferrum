@@ -248,7 +248,7 @@ fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     Frame::new()
         .fill(ui.visuals().extreme_bg_color)
         .stroke(Stroke::new(1.0_f32, stroke))
-        .corner_radius(10)
+        .corner_radius(ui.visuals().window_corner_radius)
         .inner_margin(Margin::symmetric(18, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -440,7 +440,7 @@ impl Browser {
             },
             Setting::Density => segmented(ui, &mut s.compact, &[(true, "Compact"), (false, "Comfortable")]),
             Setting::Roundness => {
-                ui.add(egui::Slider::new(&mut s.roundness, 0..=14));
+                ui.add(egui::Slider::new(&mut s.roundness, 0..=20));
             },
             Setting::TabLayout => segmented(ui, &mut s.tab_layout, &[(TabLayout::Vertical, "Side"), (TabLayout::Top, "Top")]),
             Setting::BookmarksBar => {

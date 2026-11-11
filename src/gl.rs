@@ -27,7 +27,13 @@ pub struct GlWindow {
 impl GlWindow {
     /// Create the window with an OpenGL context, and a `glow` handle for egui.
     pub fn new(event_loop: &ActiveEventLoop, attributes: WindowAttributes) -> (Self, glow::Context) {
-        let template = ConfigTemplateBuilder::new().prefer_hardware_accelerated(Some(true)).with_depth_size(0).with_stencil_size(0);
+        // macOS: an alpha channel, so popup windows can have round corners
+        // (they're transparent outside their rounded panel).
+        let template = ConfigTemplateBuilder::new()
+            .prefer_hardware_accelerated(Some(true))
+            .with_depth_size(0)
+            .with_stencil_size(0)
+            .with_transparency(cfg!(target_os = "macos"));
         let (window, config) = DisplayBuilder::new()
             .with_preference(glutin_winit::ApiPreference::FallbackEgl)
             .with_window_attributes(Some(attributes))

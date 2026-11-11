@@ -26,6 +26,10 @@ use winit::window::{Window, WindowId, WindowLevel};
 use crate::gl::GlWindow;
 use crate::profile::Settings;
 
+/// Popup windows can be see-through on macOS, so they get round corners
+/// there. Elsewhere they're child windows, which can't be, so they stay square.
+const ROUND_WINDOWS: bool = cfg!(target_os = "macos");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OverlayKind {
     Menu,
@@ -160,18 +164,33 @@ impl Overlays {
         gl_window.make_current_on(&overlay.surface);
         let mut contents = contents;
         let mut used = None;
+        let mut fill = egui::Color32::GRAY;
         let width = overlay.rect.width();
         egui.run(&overlay.window, |ui| {
-            let frame = egui::Frame::new()
-                .fill(ui.visuals().window_fill)
-                .stroke(ui.visuals().window_stroke)
-                .inner_margin(egui::Margin::same(if kind == OverlayKind::Toast { 0 } else { 6 }));
+            fill = ui.visuals().window_fill;
+            let margin = if kind == OverlayKind::Toast { egui::Margin::symmetric(14, 9) } else { egui::Margin::same(8) };
+            let stroke = ui.visuals().window_stroke;
+            let radius = if ROUND_WINDOWS { ui.visuals().window_corner_radius } else { egui::CornerRadius::ZERO };
+            let frame = egui::Frame::new().fill(fill).stroke(stroke).inner_margin(margin).corner_radius(radius);
             let response = frame.show(ui, |ui| {
-                ui.set_width(width - 14.0);
+                // Fill the window exactly: its width less the margins and the border.
+                ui.set_width(width - margin.sum().x - 2.0 * stroke.width);
                 contents(ui);
             });
             used = Some(response.response.rect.size());
         });
+        // Clear first, so no part of the window is ever left unpainted (black).
+        {
+            use glow::HasContext;
+            // Transparent around the rounded panel on macOS, the panel colour elsewhere.
+            let [r, g, b, a] = if ROUND_WINDOWS { [0.0; 4] } else { egui::Rgba::from(fill).to_array() };
+            let gl = egui.painter.gl();
+            unsafe {
+                gl.disable(glow::SCISSOR_TEST);
+                gl.clear_color(r, g, b, a);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
+        }
         egui.paint(&overlay.window);
         gl_window.swap(&overlay.surface);
         if let Some(size) = used {
@@ -237,6 +256,7 @@ fn create(
         .with_decorations(false)
         .with_resizable(false)
         .with_active(false)
+        .with_transparent(ROUND_WINDOWS)
         .with_window_level(WindowLevel::Normal)
         .with_position(winit::dpi::PhysicalPosition::new(origin.0 + (rect.left() * ppp) as i32, origin.1 + (rect.top() * ppp) as i32))
         .with_inner_size(winit::dpi::PhysicalSize::new(1, 1));

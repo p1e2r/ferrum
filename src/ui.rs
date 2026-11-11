@@ -72,10 +72,15 @@ pub fn style(ctx: &egui::Context, settings: &Settings) {
         }
         style.visuals.widgets.active.bg_stroke.color = accent;
         style.visuals.widgets.hovered.bg_stroke.color = accent.gamma_multiply(0.6);
-        style.visuals.window_corner_radius = CornerRadius::same(settings.roundness.saturating_add(4));
-        style.visuals.menu_corner_radius = CornerRadius::same(settings.roundness.saturating_add(2));
+        style.visuals.window_corner_radius = CornerRadius::same(popup_radius(settings));
+        style.visuals.menu_corner_radius = CornerRadius::same(popup_radius(settings));
         style.interaction.tooltip_delay = 0.4;
     });
+}
+
+/// Corner radius of menus and popups.
+pub fn popup_radius(settings: &Settings) -> u8 {
+    settings.roundness.saturating_add(settings.roundness / 2).min(24)
 }
 
 fn set_theme(ctx: &egui::Context, theme: ThemeChoice) {
@@ -816,13 +821,24 @@ impl Browser {
                                 }
                             }
                             let id = Id::new("location");
-                            let output = egui::TextEdit::singleline(&mut self.location)
-                                .id(id)
-                                .hint_text(format!("Search with {} or enter address", self.profile.settings.search_engine.name()))
-                                .font(FontId::proportional(15.0))
-                                .margin(Margin::symmetric(10, 6))
-                                .desired_width(f32::INFINITY)
-                                .show(ui);
+                            // The address bar is a pill when corners are round.
+                            let pill = CornerRadius::same(((self.profile.settings.roundness as f32) * 1.5).min(17.0) as u8);
+                            let hint = format!("Search with {} or enter address", self.profile.settings.search_engine.name());
+                            let output = ui
+                                .scope(|ui| {
+                                    let w = &mut ui.style_mut().visuals.widgets;
+                                    for w in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open, &mut w.noninteractive] {
+                                        w.corner_radius = pill;
+                                    }
+                                    egui::TextEdit::singleline(&mut self.location)
+                                        .id(id)
+                                        .hint_text(hint)
+                                        .font(FontId::proportional(15.0))
+                                        .margin(Margin::symmetric(14, 6))
+                                        .desired_width(f32::INFINITY)
+                                        .show(ui)
+                                })
+                                .inner;
                             let response = output.response.response;
                             url_rect = response.rect;
                             url_focused = response.has_focus();
@@ -911,7 +927,7 @@ impl Browser {
                             .inner
                             .on_hover_text(format!("{}\n{}\nRight-click to edit or remove", b.title, b.url));
                         if resp.hovered() {
-                            ui.painter().rect_filled(resp.rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
+                            ui.painter().rect_filled(resp.rect, resp.rect.height() / 2.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
                         }
                         ui.add_space(6.0);
                         if resp.clicked() {
@@ -1109,7 +1125,7 @@ impl Browser {
                                 let (r, resp) = ui.allocate_exact_size(tile, Sense::click());
                                 if resp.hovered() {
                                     let fill = if light_text { Color32::from_white_alpha(40) } else { ui.visuals().widgets.hovered.weak_bg_fill };
-                                    ui.painter().rect_filled(r.shrink(2.0), 10.0, fill);
+                                    ui.painter().rect_filled(r.shrink(2.0), ui.visuals().window_corner_radius, fill);
                                 }
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(8.0)).layout(Layout::top_down(Align::Center)));
                                 letter_icon(&mut child, title, url, 40.0);
@@ -1229,7 +1245,7 @@ impl Browser {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
         let hovered = ui.rect_contains_pointer(rect);
         if hovered {
-            ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
+            ui.painter().rect_filled(rect, ui.visuals().widgets.hovered.corner_radius, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
         }
         let mut right = rect.right();
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
@@ -1335,7 +1351,7 @@ impl Browser {
             let title = truncate(&b.title, 30);
             let mut undo = false;
             let mut dismiss = false;
-            Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(6.0).inner_margin(Margin::symmetric(8, 4)).show(ui, |ui| {
+            Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(ui.visuals().widgets.noninteractive.corner_radius).inner_margin(Margin::symmetric(8, 4)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Removed “{title}”")).size(12.0));
@@ -1370,7 +1386,7 @@ impl Browser {
                 shown += 1;
                 if let Some((orig, title, url)) = self.bookmark_edit.as_mut().filter(|(u, ..)| *u == b.url) {
                     let _ = orig;
-                    Frame::new().fill(ui.visuals().extreme_bg_color).corner_radius(8.0).inner_margin(Margin::same(8)).show(ui, |ui| {
+                    Frame::new().fill(ui.visuals().extreme_bg_color).corner_radius(ui.visuals().window_corner_radius).inner_margin(Margin::same(8)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("Name").size(11.0).weak());
                         let t = ui.add(egui::TextEdit::singleline(title).desired_width(f32::INFINITY));

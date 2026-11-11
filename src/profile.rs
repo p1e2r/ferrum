@@ -157,6 +157,9 @@ pub struct Settings {
     pub compact: bool,
     /// Corner rounding of buttons, tabs and fields, in points.
     pub roundness: u8,
+    /// Bumped when a default look changes, to move people off the old default.
+    #[serde(default)] // missing in older files: 0
+    pub look_version: u32,
     pub tab_layout: TabLayout,
     pub show_bookmarks_bar: bool,
     pub show_home_button: bool,
@@ -233,7 +236,8 @@ impl Default for Settings {
             accent: DEFAULT_ACCENT,
             ui_scale: 1.0,
             compact: false,
-            roundness: 6,
+            roundness: 12,
+            look_version: 1,
             tab_layout: TabLayout::default(),
             show_bookmarks_bar: true,
             show_home_button: true,
@@ -364,6 +368,13 @@ impl Profile {
         if let Some(dir) = dir {
             if std::fs::create_dir_all(&dir).is_ok() {
                 profile.settings = read_json(&dir.join("settings.json"));
+                // Rounder corners are the new default; keep a value someone chose.
+                if profile.settings.look_version < 1 {
+                    if profile.settings.roundness == 6 {
+                        profile.settings.roundness = 12;
+                    }
+                    profile.settings.look_version = 1;
+                }
                 profile.bookmarks = read_json(&dir.join("bookmarks.json"));
                 profile.history = read_json(&dir.join("history.json"));
                 profile.dir = Some(dir);

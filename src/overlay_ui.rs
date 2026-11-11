@@ -143,8 +143,7 @@ impl Browser {
             OverlayKind::Toast => {
                 if let Some((text, _)) = &self.toast {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(text.as_str()).size(14.0));
+                        ui.add(egui::Label::new(RichText::new(text.as_str()).size(14.0)).wrap_mode(egui::TextWrapMode::Extend));
                     });
                 }
             },
@@ -341,7 +340,7 @@ impl Browser {
                 .response;
             let resp = ui.interact(resp.rect, Id::new(("sugg", i)), egui::Sense::click());
             if selected || resp.hovered() {
-                ui.painter().rect_filled(resp.rect.expand(2.0), 4.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
+                ui.painter().rect_filled(resp.rect.expand(2.0), ui.visuals().widgets.hovered.corner_radius, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
             }
             if resp.clicked() {
                 chosen = Some(url.clone());
