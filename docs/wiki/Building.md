@@ -27,7 +27,7 @@ Everything lands in `dist/`.
 
 ### macOS → macOS (`build-macos.sh`)
 
-Builds `aarch64-apple-darwin` and `x86_64-apple-darwin`, joins them with `lipo` into one universal binary, wraps it in `Ferrum.app` (with an `Info.plist` that also registers Ferrum for http/https links), signs it, and packages `Ferrum-<version>-macos-universal.dmg`.
+Builds `aarch64-apple-darwin` and `x86_64-apple-darwin`, wraps each in its own `Ferrum.app` (with an `Info.plist` that also registers Ferrum for http/https links), signs them, and packages `Ferrum-<version>-macos-apple-silicon.dmg` and `Ferrum-<version>-macos-intel.dmg`. `ARCHS=aarch64-apple-darwin` builds just one.
 
 - Needs Xcode command line tools and `brew install llvm cmake pkg-config`.
 - `SIGN_IDENTITY="Developer ID Application: …"` signs with your certificate; otherwise it's ad-hoc signed (fine for your own machine; other Macs will need right-click → Open the first time).
@@ -50,7 +50,7 @@ Cross-compiles `x86_64-pc-windows-msvc` with [cargo-xwin](https://github.com/rus
 
 ## CI: `.github/workflows/build.yml`
 
-On every push to `main` and every pull request, GitHub Actions builds and tests natively on Linux x86_64, Linux arm64, macOS (universal, via `build-macos.sh`) and Windows x86_64, and uploads each package as a workflow artifact.
+On every push to `main` and every pull request, GitHub Actions builds and tests natively on Linux x86_64, Linux arm64, macOS (Apple Silicon and Intel, via `build-macos.sh`) and Windows x86_64, and uploads each package as a workflow artifact.
 
 ### Versions
 

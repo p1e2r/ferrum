@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Build Ferrum for one or more platforms from a Mac (or Linux host).
 #
-#   scripts/build.sh macos      # universal .app + .dmg (Apple Silicon + Intel)
+#   scripts/build.sh macos      # Apple Silicon and Intel .dmg files
 #   scripts/build.sh linux      # x86_64 + arm64 tarballs, built in Docker
 #   scripts/build.sh windows    # x86_64 .exe zip, cross-compiled with cargo-xwin
 #   scripts/build.sh all        # everything above

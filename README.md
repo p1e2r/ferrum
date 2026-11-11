@@ -88,7 +88,7 @@ cargo run --release -- --private       # private window
 ### Build scripts (from a Mac)
 
 ```sh
-scripts/build.sh macos     # universal Ferrum.app + .dmg (Apple Silicon + Intel)
+scripts/build.sh macos     # Ferrum.app as two .dmg files: Apple Silicon and Intel
 scripts/build.sh linux     # x86_64 + arm64 .tar.gz, built in Docker
 scripts/build.sh windows   # x86_64 .zip, cross-compiled with cargo-xwin
 scripts/build.sh all

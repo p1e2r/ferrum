@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# macOS -> macOS: builds Apple Silicon and Intel binaries, merges them into one
-# universal Ferrum.app, and packages it as a .dmg.
+# macOS -> macOS: builds Ferrum.app for Apple Silicon and for Intel, and
+# packages each as its own .dmg:
+#   dist/Ferrum-<version>-macos-apple-silicon.dmg
+#   dist/Ferrum-<version>-macos-intel.dmg
+#
+#   ARCHS=aarch64-apple-darwin scripts/build-macos.sh   # just one
 #
 # Needs: Xcode command line tools (xcode-select --install), Rust via rustup,
 #        (Pages use the system's WebKit, so nothing else is needed.)
@@ -12,8 +16,7 @@ cd "$(dirname "$0")/.."
 
 VERSION=${FERRUM_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}
 DIST=dist
-APP="$DIST/Ferrum.app"
-ARCHS=(aarch64-apple-darwin x86_64-apple-darwin)
+read -r -a ARCHS <<< "${ARCHS:-aarch64-apple-darwin x86_64-apple-darwin}"
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-11.0}
 
 echo "==> Building Ferrum $VERSION for macOS (${ARCHS[*]})"
@@ -22,15 +25,24 @@ for target in "${ARCHS[@]}"; do
   cargo build --release --target "$target"
 done
 
+ICONSET=$(mktemp -d)/Ferrum.iconset
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z $size $size assets/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  sips -z $((size * 2)) $((size * 2)) assets/icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+
 mkdir -p "$DIST"
+for target in "${ARCHS[@]}"; do
+case "$target" in
+  aarch64-*) LABEL=apple-silicon ;;
+  x86_64-*) LABEL=intel ;;
+  *) LABEL=$target ;;
+esac
+APP="$DIST/$LABEL/Ferrum.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-
-echo "==> Creating universal binary"
-lipo -create \
-  "target/aarch64-apple-darwin/release/ferrum" \
-  "target/x86_64-apple-darwin/release/ferrum" \
-  -output "$APP/Contents/MacOS/ferrum"
+cp "target/$target/release/ferrum" "$APP/Contents/MacOS/ferrum"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,26 +72,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> App icon"
-ICONSET=$(mktemp -d)/Ferrum.iconset
-mkdir -p "$ICONSET"
-for size in 16 32 128 256 512; do
-  sips -z $size $size assets/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-  sips -z $((size * 2)) $((size * 2)) assets/icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Ferrum.icns"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string Ferrum.icns" "$APP/Contents/Info.plist"
 
-echo "==> Signing (ad-hoc; set SIGN_IDENTITY to sign with a Developer ID)"
-# The entitlements let SpiderMonkey's JIT allocate executable memory under the
-# hardened runtime; without them JavaScript fails to start and Ferrum crashes.
+echo "==> Signing $LABEL (ad-hoc; set SIGN_IDENTITY to sign with a Developer ID)"
 codesign --force --deep --options runtime \
   --entitlements assets/Ferrum.entitlements \
   --sign "${SIGN_IDENTITY:--}" "$APP"
 codesign --verify --strict "$APP"
 
 echo "==> Packaging .dmg"
-DMG="$DIST/Ferrum-$VERSION-macos-universal.dmg"
+DMG="$DIST/Ferrum-$VERSION-macos-$LABEL.dmg"
 rm -f "$DMG"
 STAGE=$(mktemp -d)
 cp -R "$APP" "$STAGE/"
@@ -87,4 +90,5 @@ ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "Ferrum" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
 
-echo "==> macOS: $DMG"
+echo "==> macOS ($LABEL): $DMG"
+done
