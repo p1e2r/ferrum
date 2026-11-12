@@ -14,22 +14,19 @@ pub fn input_to_url(input: &str, settings: &Settings) -> Option<Url> {
     }
 
     // Already a full URL (https://…, file://…, about:blank, data:…).
-    if input.contains("://")
+    if (input.contains("://")
         || input.starts_with("about:")
         || input.starts_with("data:")
-        || input.starts_with("file:")
-    {
-        if let Ok(url) = Url::parse(input) {
+        || input.starts_with("file:"))
+        && let Ok(url) = Url::parse(input) {
             return Some(url);
         }
-    }
 
     // A local file path.
-    if input.starts_with('/') || (input.len() > 2 && input.as_bytes()[1] == b':' && input.as_bytes()[2] == b'\\') {
-        if let Ok(url) = Url::from_file_path(input) {
+    if (input.starts_with('/') || (input.len() > 2 && input.as_bytes()[1] == b':' && input.as_bytes()[2] == b'\\'))
+        && let Ok(url) = Url::from_file_path(input) {
             return Some(url);
         }
-    }
 
     // Looks like a host name: "example.com", "localhost:8080", "10.0.0.1/path".
     let looks_like_host = !input.contains(char::is_whitespace)
@@ -39,11 +36,10 @@ pub fn input_to_url(input: &str, settings: &Settings) -> Option<Url> {
     if looks_like_host {
         let local = input.starts_with("localhost") || input.starts_with("127.") || input.starts_with("192.168.") || input.starts_with("10.");
         let scheme = if local { "http" } else { "https" };
-        if let Ok(url) = Url::parse(&format!("{scheme}://{input}")) {
-            if url.host_str().is_some_and(|h| h.contains('.') || h == "localhost") {
+        if let Ok(url) = Url::parse(&format!("{scheme}://{input}"))
+            && url.host_str().is_some_and(|h| h.contains('.') || h == "localhost") {
                 return Some(url);
             }
-        }
     }
 
     // Otherwise treat it as a search.

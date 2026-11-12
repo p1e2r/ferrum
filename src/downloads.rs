@@ -168,6 +168,7 @@ impl Downloads {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one download's settings, passed to its thread
 fn run(
     url: &str,
     cookies: Option<String>,

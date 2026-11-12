@@ -25,7 +25,8 @@ pub enum UpdateStatus {
     Checking,
     UpToDate,
     /// `url` is the release page; `asset` the package for this computer, if there is one.
-    Available { version: String, url: String, asset: Option<String> },
+    /// `sums` is the release's SHA256SUMS file, to check the download against.
+    Available { version: String, url: String, asset: Option<String>, sums: Option<String> },
     Downloading { version: String, received: u64, total: Option<u64> },
     Installing { version: String },
     /// Installed; restart with this program.
@@ -53,24 +54,38 @@ pub fn parse_version(v: &str) -> Option<(u32, u32, u32)> {
     Some((parts.next()??, parts.next().flatten().unwrap_or(0), parts.next().flatten().unwrap_or(0)))
 }
 
-/// The newest (version, page, package for this computer) in a GitHub releases list.
-fn newest(json: &serde_json::Value) -> Option<(String, String, Option<String>)> {
+/// A release on GitHub this computer can update to.
+struct Found {
+    version: String,
+    page: String,
+    package: Option<String>,
+    sums: Option<String>,
+}
+
+/// The newest release in a GitHub releases list (drafts and pre-releases skipped).
+fn newest(json: &serde_json::Value) -> Option<Found> {
     json.as_array()?
         .iter()
-        .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+        .filter(|r| !r["draft"].as_bool().unwrap_or(false) && !r["prerelease"].as_bool().unwrap_or(false))
         .filter_map(|r| {
             let tag = r["tag_name"].as_str()?;
-            let url = r["html_url"].as_str().unwrap_or(RELEASES_PAGE);
-            let asset = package_suffix().and_then(|suffix| {
-                r["assets"].as_array()?.iter().find_map(|a| {
+            let assets = r["assets"].as_array();
+            let find = |pred: &dyn Fn(&str) -> bool| {
+                assets?.iter().find_map(|a| {
                     let name = a["name"].as_str()?;
-                    name.ends_with(suffix).then(|| a["browser_download_url"].as_str().map(str::to_owned)).flatten()
+                    pred(name).then(|| a["browser_download_url"].as_str().map(str::to_owned)).flatten()
                 })
-            });
-            Some((parse_version(tag)?, tag.trim_start_matches('v').to_string(), url.to_string(), asset))
+            };
+            let found = Found {
+                version: tag.trim_start_matches('v').to_string(),
+                page: r["html_url"].as_str().unwrap_or(RELEASES_PAGE).to_string(),
+                package: package_suffix().and_then(|suffix| find(&|n: &str| n.ends_with(suffix))),
+                sums: find(&|n: &str| n == "SHA256SUMS"),
+            };
+            Some((parse_version(tag)?, found))
         })
-        .max_by_key(|(v, ..)| *v)
-        .map(|(_, tag, url, asset)| (tag, url, asset))
+        .max_by_key(|(v, _)| *v)
+        .map(|(_, f)| f)
 }
 
 /// Start a check; the result appears in the returned slot. `notify` wakes the UI.
@@ -81,7 +96,9 @@ pub fn check(current: &str, notify: Arc<dyn Fn() + Send + Sync>) -> Arc<Mutex<Up
     let _ = std::thread::Builder::new().name("update-check".into()).spawn(move || {
         let status = match fetch() {
             Ok(json) => match newest(&json) {
-                Some((version, url, asset)) if parse_version(&version) > parse_version(&current) => UpdateStatus::Available { version, url, asset },
+                Some(f) if parse_version(&f.version) > parse_version(&current) => {
+                    UpdateStatus::Available { version: f.version, url: f.page, asset: f.package, sums: f.sums }
+                },
                 _ => UpdateStatus::UpToDate,
             },
             Err(e) => UpdateStatus::Failed(e),
@@ -95,7 +112,7 @@ pub fn check(current: &str, notify: Arc<dyn Fn() + Send + Sync>) -> Arc<Mutex<Up
 }
 
 /// Download and install `asset` on a background thread, reporting progress in `slot`.
-pub fn install(version: String, asset: String, slot: Arc<Mutex<UpdateStatus>>, notify: Arc<dyn Fn() + Send + Sync>) {
+pub fn install(version: String, asset: String, sums: Option<String>, slot: Arc<Mutex<UpdateStatus>>, notify: Arc<dyn Fn() + Send + Sync>) {
     let _ = std::thread::Builder::new().name("update-install".into()).spawn(move || {
         let set = |s: UpdateStatus| {
             if let Ok(mut slot) = slot.lock() {
@@ -111,6 +128,9 @@ pub fn install(version: String, asset: String, slot: Arc<Mutex<UpdateStatus>>, n
             .and_then(|_| download(&asset, &work, |received, total| set(UpdateStatus::Downloading { version: version.clone(), received, total })))
             .and_then(|package| {
                 set(UpdateStatus::Installing { version: version.clone() });
+                if let Some(sums) = &sums {
+                    verify(&package, sums)?;
+                }
                 put_in_place(&package, &work)
             });
         let _ = std::fs::remove_dir_all(&work);
@@ -124,13 +144,46 @@ pub fn install(version: String, asset: String, slot: Arc<Mutex<UpdateStatus>>, n
     });
 }
 
-fn download(url: &str, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<PathBuf, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(crate::tls_config())
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .tls_config(crate::tls_config())
         .timeout_connect(Some(Duration::from_secs(20)))
         .user_agent(format!("Ferrum/{}", crate::VERSION))
         .build()
-        .into();
-    let mut response = agent.get(url).call().map_err(|e| format!("Download failed: {e}"))?;
+        .into()
+}
+
+/// Check a downloaded package against the release's SHA256SUMS
+/// (lines of `<hex digest>  <file name>`).
+fn verify(package: &Path, sums_url: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let name = package.file_name().and_then(|n| n.to_str()).ok_or("bad file name")?;
+    let text = agent()
+        .get(sums_url)
+        .call()
+        .and_then(|mut r| r.body_mut().read_to_string())
+        .map_err(|e| format!("Couldn't check the download: {e}"))?;
+    let expected = expected_digest(&text, name).ok_or("The download isn't listed in the release's checksums")?;
+    let mut file = std::fs::File::open(package).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+    let actual: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err("The download is damaged (its checksum doesn't match). Try again later.".into())
+    }
+}
+
+fn expected_digest(sums: &str, name: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let (hash, file) = line.trim().split_once(char::is_whitespace)?;
+        (file.trim().trim_start_matches('*') == name).then(|| hash.to_ascii_lowercase())
+    })
+}
+
+fn download(url: &str, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<PathBuf, String> {
+    let mut response = agent().get(url).call().map_err(|e| format!("Download failed: {e}"))?;
     let total = response.body().content_length();
     let name = url.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("package");
     let path = dir.join(name);
@@ -300,13 +353,12 @@ pub fn relaunch_after_exit(program: &Path) -> Result<(), String> {
 
 /// Remove what an earlier update left behind (Windows can't delete a running .exe).
 pub fn clean_up_after_update() {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent() {
             for name in ["ferrum.old.exe", "ferrum.new.exe", ".ferrum.old", ".ferrum.new"] {
                 let _ = std::fs::remove_file(dir.join(name));
             }
         }
-    }
 }
 
 fn fetch() -> Result<serde_json::Value, String> {
@@ -343,7 +395,20 @@ mod tests {
             r#"[{"tag_name":"v0.4.0","html_url":"a"},{"tag_name":"v0.10.1","html_url":"b"},{"tag_name":"nightly","html_url":"c"},{"tag_name":"v0.9.0","html_url":"d","draft":true}]"#,
         )
         .unwrap();
-        assert_eq!(newest(&json).map(|(v, u, _)| (v, u)), Some(("0.10.1".into(), "b".into())));
+        assert_eq!(newest(&json).map(|f| (f.version, f.page)), Some(("0.10.1".into(), "b".into())));
+    }
+
+    #[test]
+    fn skips_pre_releases_and_reads_checksums() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"[{"tag_name":"v1.0.2","html_url":"pre","prerelease":true},{"tag_name":"v1.0.1","html_url":"ok"}]"#,
+        )
+        .unwrap();
+        assert_eq!(newest(&json).map(|f| f.page), Some("ok".into()));
+        let sums = "abc123  Ferrum-1.0.0-macos-intel.dmg\nDEF456 *ferrum-1.0.0-windows-x86_64.zip\n";
+        assert_eq!(expected_digest(sums, "Ferrum-1.0.0-macos-intel.dmg").as_deref(), Some("abc123"));
+        assert_eq!(expected_digest(sums, "ferrum-1.0.0-windows-x86_64.zip").as_deref(), Some("def456"));
+        assert_eq!(expected_digest(sums, "other"), None);
     }
 
     #[test]
@@ -356,6 +421,6 @@ mod tests {
                 {"name": format!("ferrum-1.0.0-{suffix}"), "browser_download_url": "right"}
             ]
         }]);
-        assert_eq!(newest(&json).and_then(|(.., a)| a), Some("right".into()));
+        assert_eq!(newest(&json).and_then(|f| f.package), Some("right".into()));
     }
 }

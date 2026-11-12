@@ -553,8 +553,8 @@ impl Profile {
             history: Vec::new(),
             dirty_since: None,
         };
-        if let Some(dir) = dir {
-            if std::fs::create_dir_all(&dir).is_ok() {
+        if let Some(dir) = dir
+            && std::fs::create_dir_all(&dir).is_ok() {
                 profile.settings = read_json(&dir.join("settings.json"));
                 // Rounder corners are the new default; keep a value someone chose.
                 if profile.settings.look_version < 1 {
@@ -586,7 +586,6 @@ impl Profile {
                 profile.history = read_json(&dir.join("history.json"));
                 profile.dir = Some(dir);
             }
-        }
         if profile.bookmarks.is_empty() && profile.dir.is_some() && !profile.dir.as_ref().unwrap().join("bookmarks.json").exists() {
             profile.bookmarks = vec![
                 Bookmark { title: "Wikipedia".into(), url: "https://en.wikipedia.org/".into() },
@@ -786,12 +785,11 @@ impl Profile {
         if title.is_empty() {
             return;
         }
-        if let Some(entry) = self.history.iter_mut().rev().find(|h| h.url == url.as_str()) {
-            if entry.title != title {
+        if let Some(entry) = self.history.iter_mut().rev().find(|h| h.url == url.as_str())
+            && entry.title != title {
                 entry.title = title.to_string();
                 self.mark_dirty();
             }
-        }
     }
 
     pub fn clear_history(&mut self) {

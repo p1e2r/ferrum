@@ -1,6 +1,6 @@
 [package]
 name = "ferrum"
-version = "0.7.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "A fast web browser with a native Rust interface, using the system web engine (WebKit, WebView2, WebKitGTK)."
@@ -16,6 +16,8 @@ wry = { version = "0.57", features = ["devtools"] }
 # Reading other browsers' bookmarks and history (import).
 rusqlite = { version = "0.42", features = ["bundled"] }
 plist = "1.10"
+# Checking downloaded updates against the release's SHA256SUMS.
+sha2 = "0.10"
 winit = "0.30.13"
 egui = "0.34.3"
 egui-winit = { version = "0.34.3", default-features = false, features = ["clipboard", "links", "x11"] }

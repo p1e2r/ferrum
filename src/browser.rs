@@ -46,6 +46,11 @@ const SLEEP_CHECK: Duration = Duration::from_secs(60);
 
 /// Something a page's engine reported. The engine's callbacks only queue
 /// these; `Browser::pump` handles them.
+/// A tab's icon, decoded on a background thread: (tab id, image).
+type Favicon = (u64, egui::ColorImage);
+/// A value a script callback or background thread fills in for the main thread.
+type Shared<T> = Arc<Mutex<T>>;
+
 enum Event {
     Title(u64, String),
     Load(u64, PageLoadEvent, String),
@@ -317,12 +322,12 @@ pub struct Browser {
     /// The page script, and the settings it was built for.
     page_script: (u64, String),
     pub(crate) proxy: EventLoopProxy<WakeUp>,
-    favicons: (mpsc::Sender<(u64, egui::ColorImage)>, mpsc::Receiver<(u64, egui::ColorImage)>),
+    favicons: (mpsc::Sender<Favicon>, mpsc::Receiver<Favicon>),
     last_sleep_check: Instant,
     last_url_poll: Instant,
-    pending_reader: Option<(u64, Arc<Mutex<Option<Option<ReaderDoc>>>>)>,
-    pending_source: Option<Arc<Mutex<Option<(String, String)>>>>,
-    search_check: Arc<Mutex<Option<(u64, SearchEngine, String)>>>,
+    pending_reader: Option<(u64, Shared<Option<Option<ReaderDoc>>>)>,
+    pending_source: Option<Shared<Option<(String, String)>>>,
+    search_check: Shared<Option<(u64, SearchEngine, String)>>,
     /// Whether the interface took the keyboard back from the page.
     page_unfocused: bool,
     pub(crate) custom_title_bar_at_start: bool,
@@ -386,11 +391,10 @@ impl Browser {
             let proxy = proxy.clone();
             egui.egui_ctx.set_request_repaint_callback(move |info| {
                 let at = Instant::now() + info.delay;
-                if let Ok(mut slot) = repaint_at.lock() {
-                    if slot.is_none_or(|current| at < current) {
+                if let Ok(mut slot) = repaint_at.lock()
+                    && slot.is_none_or(|current| at < current) {
                         *slot = Some(at);
                     }
-                }
                 if info.delay.is_zero() {
                     let _ = proxy.send_event(WakeUp);
                 }
@@ -588,22 +592,20 @@ impl Browser {
             })
             .with_drag_drop_handler(move |event| {
                 // Files dropped on a page open in tabs (instead of replacing the page).
-                if let wry::DragDropEvent::Drop { paths, .. } = event {
-                    if !paths.is_empty() {
+                if let wry::DragDropEvent::Drop { paths, .. } = event
+                    && !paths.is_empty() {
                         q6.push(Event::OpenFiles(paths));
                         return true;
                     }
-                }
                 false
             })
             .with_navigation_handler(move |url| {
                 if let Ok(parsed) = Url::parse(&url) {
-                    if let Some(base) = &pdf_base {
-                        if crate::startview::is_pdf(&parsed) && matches!(parsed.scheme(), "http" | "https" | "file") {
+                    if let Some(base) = &pdf_base
+                        && crate::startview::is_pdf(&parsed) && matches!(parsed.scheme(), "http" | "https" | "file") {
                             queue.push(Event::Redirect(tab_id, crate::startview::pdf_viewer(base, &parsed)));
                             return false;
                         }
-                    }
                     if matches!(parsed.scheme(), "http" | "https") && looks_like_download(&parsed) {
                         queue.push(Event::Download(tab_id, url));
                         return false;
@@ -1092,11 +1094,10 @@ impl Browser {
                         PageLoadEvent::Started => {
                             let tab = &mut self.tabs[i];
                             // HTTPS-only: an http:// navigation was stopped; load the https:// address.
-                            if self.profile.settings.https_only && url.starts_with("https://") && tab.page_url.as_ref().map(|u| u.as_str()) != Some(url.as_str()) {
-                                if let Some(w) = &tab.webview {
+                            if self.profile.settings.https_only && url.starts_with("https://") && tab.page_url.as_ref().map(|u| u.as_str()) != Some(url.as_str())
+                                && let Some(w) = &tab.webview {
                                     let _ = w.load_url(&url);
                                 }
-                            }
                             tab.is_loading = true;
                             tab.reader = None;
                             tab.playing = false;
@@ -1114,11 +1115,10 @@ impl Browser {
                             if parsed.is_some() {
                                 tab.page_url = parsed.clone();
                             }
-                            if tab.muted {
-                                if let Some(w) = &tab.webview {
+                            if tab.muted
+                                && let Some(w) = &tab.webview {
                                     let _ = w.evaluate_script(&crate::pagescript::mute(true));
                                 }
-                            }
                             if let Some(url) = parsed {
                                 let title = (!tab.title.is_empty()).then(|| tab.title.clone());
                                 self.profile.record_visit(&url, title.as_deref());
@@ -1357,14 +1357,13 @@ impl Browser {
                 }
             },
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::MouseInput { state: ElementState::Pressed, .. } => {
+            WindowEvent::MouseInput { state: ElementState::Pressed, .. }
                 // Clicks inside a popup go to the popup's own window, so any
                 // click here is outside it.
-                if self.tab_menu.is_some() || self.link_menu.is_some() {
+                if (self.tab_menu.is_some() || self.link_menu.is_some()) => {
                     self.tab_menu = None;
                     self.link_menu = None;
-                }
-            },
+                },
             _ => {},
         }
 
@@ -1372,12 +1371,11 @@ impl Browser {
             return true;
         }
 
-        if let WindowEvent::KeyboardInput { event: key, .. } = &event {
-            if key.state == ElementState::Pressed && self.handle_shortcut(&shortcut_from(key, self.modifiers)) {
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event
+            && key.state == ElementState::Pressed && self.handle_shortcut(&shortcut_from(key, self.modifiers)) {
                 self.window.request_redraw();
                 return true;
             }
-        }
 
         let Some(egui) = self.egui.as_mut() else { return true };
         let response = egui.on_window_event(&self.window, &event);
@@ -1720,12 +1718,12 @@ impl Browser {
 
     /// "Update now": download and install the new version, then restart.
     pub(crate) fn start_update(&mut self) {
-        let Some(UpdateStatus::Available { version, url, asset }) = self.update_status() else { return };
+        let Some(UpdateStatus::Available { version, url, asset, sums }) = self.update_status() else { return };
         let Some(slot) = self.update.clone() else { return };
         match asset {
             Some(asset) => {
                 let proxy = self.proxy.clone();
-                crate::updates::install(version, asset, slot, Arc::new(move || {
+                crate::updates::install(version, asset, sums, slot, Arc::new(move || {
                     let _ = proxy.send_event(WakeUp);
                 }));
             },
@@ -1783,13 +1781,12 @@ impl Browser {
     }
 
     pub(crate) fn undo_remove_bookmark(&mut self) {
-        if let Some((i, b)) = self.removed_bookmark.take() {
-            if !self.profile.is_bookmarked(&b.url) {
+        if let Some((i, b)) = self.removed_bookmark.take()
+            && !self.profile.is_bookmarked(&b.url) {
                 let i = i.min(self.profile.bookmarks.len());
                 self.profile.bookmarks.insert(i, b);
                 self.profile.mark_dirty();
             }
-        }
     }
 
     /// Save an edited bookmark. An address that isn't a URL is read like the address bar does.
@@ -2295,16 +2292,14 @@ impl Browser {
         {
             // WebKitGTK keeps X11 input focus in its child window; move it to ours.
             use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-            if let (Ok(w), Ok(d)) = (self.window.window_handle(), self.window.display_handle()) {
-                if let (RawWindowHandle::Xlib(w), RawDisplayHandle::Xlib(d)) = (w.as_raw(), d.as_raw()) {
-                    if let (Ok(xlib), Some(display)) = (x11_dl::xlib::Xlib::open(), d.display) {
+            if let (Ok(w), Ok(d)) = (self.window.window_handle(), self.window.display_handle())
+                && let (RawWindowHandle::Xlib(w), RawDisplayHandle::Xlib(d)) = (w.as_raw(), d.as_raw())
+                    && let (Ok(xlib), Some(display)) = (x11_dl::xlib::Xlib::open(), d.display) {
                         unsafe {
                             (xlib.XSetInputFocus)(display.as_ptr() as *mut _, w.window, x11_dl::xlib::RevertToParent, x11_dl::xlib::CurrentTime);
                             (xlib.XFlush)(display.as_ptr() as *mut _);
                         }
                     }
-                }
-            }
         }
         #[cfg(not(target_os = "linux"))]
         match self.tabs.iter().find_map(|t| t.webview.as_ref()) {
@@ -2393,6 +2388,11 @@ pub(crate) fn looks_like_block_page(text: &str) -> bool {
     SIGNS.iter().any(|s| text.contains(s))
 }
 
+/// A bookmark title short enough for a notice.
+fn truncate_title(title: &str) -> String {
+    if title.chars().count() <= 40 { title.to_string() } else { format!("{}…", title.chars().take(39).collect::<String>()) }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2401,9 +2401,4 @@ mod tests {
         assert!(super::looks_like_block_page("trustpositif.komdigi.go.id"));
         assert!(!super::looks_like_block_page("duckduckgo html results for rust"));
     }
-}
-
-/// A bookmark title short enough for a notice.
-fn truncate_title(title: &str) -> String {
-    if title.chars().count() <= 40 { title.to_string() } else { format!("{}…", title.chars().take(39).collect::<String>()) }
 }

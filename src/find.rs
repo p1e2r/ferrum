@@ -100,9 +100,8 @@ impl FindState {
         let proxy = proxy.clone();
         let _ = webview.evaluate_script_with_callback(&format!("{SCRIPT}({args})"), move |value| {
             // The engine hands back the script's result as JSON: "[current, total]".
-            if let Ok(v) = serde_json::from_str::<Vec<f64>>(&value) {
-                if let Ok(mut r) = result.lock() { *r = (v.first().copied().unwrap_or(0.0) as u32, v.get(1).copied().unwrap_or(0.0) as u32); }
-            }
+            if let Ok(v) = serde_json::from_str::<Vec<f64>>(&value)
+                && let Ok(mut r) = result.lock() { *r = (v.first().copied().unwrap_or(0.0) as u32, v.get(1).copied().unwrap_or(0.0) as u32); }
             let _ = proxy.send_event(WakeUp);
         });
     }

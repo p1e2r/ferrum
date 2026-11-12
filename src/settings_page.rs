@@ -462,11 +462,10 @@ impl Browser {
                     if ui.color_edit_button_srgba(&mut c).on_hover_text("Any colour").changed() {
                         s.accent = [c.r(), c.g(), c.b()];
                     }
-                    if let Some(p) = s.theme_preset.palette_for(ui.ctx().theme() == egui::Theme::Dark) {
-                        if s.accent != p.accent && ui.small_button("Theme's colour").clicked() {
+                    if let Some(p) = s.theme_preset.palette_for(ui.ctx().theme() == egui::Theme::Dark)
+                        && s.accent != p.accent && ui.small_button("Theme's colour").clicked() {
                             s.accent = p.accent;
                         }
-                    }
                 });
             },
             Setting::UiScale => {
@@ -576,13 +575,11 @@ impl Browser {
                     let at = |pos: [f32; 2]| rect.min + vec2(pos[0], pos[1]) * rect.size();
                     let spots: Vec<egui::Pos2> = s.gradient_sources.iter().map(|g| at(g.pos)).collect();
                     let dot = |i: usize| spots[i];
-                    if resp.drag_started() || resp.clicked() {
-                        if let Some(p) = resp.interact_pointer_pos() {
-                            if let Some(i) = (0..n).filter(|&i| dot(i).distance(p) < 14.0).min_by(|&a, &b| dot(a).distance(p).total_cmp(&dot(b).distance(p))) {
+                    if (resp.drag_started() || resp.clicked())
+                        && let Some(p) = resp.interact_pointer_pos()
+                            && let Some(i) = (0..n).filter(|&i| dot(i).distance(p) < 14.0).min_by(|&a, &b| dot(a).distance(p).total_cmp(&dot(b).distance(p))) {
                                 sel = i;
                             }
-                        }
-                    }
                     if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
                         let v = (p - rect.min) / rect.size();
                         s.gradient_sources[sel].pos = [v.x.clamp(0.0, 1.0), v.y.clamp(0.0, 1.0)];
@@ -734,11 +731,10 @@ impl Browser {
                 if !s.start_image.is_empty() && ui.button("Remove").clicked() {
                     s.start_image.clear();
                 }
-                if ui.button("Choose…").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "bmp"]).pick_file() {
+                if ui.button("Choose…").clicked()
+                    && let Some(path) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "bmp"]).pick_file() {
                         s.start_image = path.to_string_lossy().into_owned();
                     }
-                }
                 let name = std::path::Path::new(&s.start_image)
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -793,11 +789,10 @@ impl Browser {
                     ui.add(egui::Label::new(RichText::new(current).monospace()).truncate());
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("Change…").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    if ui.button("Change…").clicked()
+                        && let Some(dir) = rfd::FileDialog::new().pick_folder() {
                             s.download_dir = dir.to_string_lossy().into_owned();
                         }
-                    }
                     if !s.download_dir.is_empty() && ui.button("Use the Downloads folder").clicked() {
                         s.download_dir.clear();
                     }
@@ -1055,7 +1050,7 @@ impl Browser {
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(APP_NAME).size(22.0).strong());
-                ui.label(format!("Version {} (nightly)", crate::VERSION));
+                ui.label(format!("Version {}", crate::VERSION));
                 let mut check = false;
                 ui.horizontal(|ui| match self.update_status() {
                     None => check = ui.small_button("Check for updates").clicked(),

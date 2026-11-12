@@ -193,13 +193,12 @@ impl Overlays {
         }
         egui.paint(&overlay.window);
         gl_window.swap(&overlay.surface);
-        if let Some(size) = used {
-            if overlay.content.is_none_or(|c| (c.y - size.y).abs() > 0.5) {
+        if let Some(size) = used
+            && overlay.content.is_none_or(|c| (c.y - size.y).abs() > 0.5) {
                 overlay.content = Some(size);
                 // The size changed: draw again at the new size.
                 gl_window.window.request_redraw();
             }
-        }
         overlay.egui = Some(egui);
     }
 

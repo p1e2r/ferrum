@@ -325,11 +325,10 @@ impl Browser {
             }
         }
 
-        if self.find.open {
-            if let Some(webview) = self.tabs.get(self.active).and_then(|t| t.webview.as_ref()) {
+        if self.find.open
+            && let Some(webview) = self.tabs.get(self.active).and_then(|t| t.webview.as_ref()) {
                 self.find.search_if_changed(webview, &self.proxy);
             }
-        }
 
         self.content_rect = ui.available_rect_before_wrap();
         self.draw_content(ui);
@@ -520,11 +519,10 @@ impl Browser {
             if resp.double_clicked() {
                 self.window.set_maximized(!self.window.is_maximized());
             }
-            if resp.secondary_clicked() {
-                if let Some(p) = resp.interact_pointer_pos() {
+            if resp.secondary_clicked()
+                && let Some(p) = resp.interact_pointer_pos() {
                     self.window.show_window_menu(winit::dpi::LogicalPosition::new(p.x, p.y));
                 }
-            }
         }
         if buttons_width > 0.0 {
             crate::icons::window_buttons(ui, buttons, self.window.is_maximized())
@@ -1450,11 +1448,10 @@ impl Browser {
             });
         });
         ui.add_space(4.0);
-        if let Some(url) = self.active_tab().url().filter(|u| matches!(u.scheme(), "http" | "https" | "file")) {
-            if !self.profile.is_bookmarked(url.as_str()) && ui.button("☆  Bookmark this page").clicked() {
+        if let Some(url) = self.active_tab().url().filter(|u| matches!(u.scheme(), "http" | "https" | "file"))
+            && !self.profile.is_bookmarked(url.as_str()) && ui.button("☆  Bookmark this page").clicked() {
                 self.toggle_bookmark();
             }
-        }
         ui.checkbox(&mut self.profile.settings.show_bookmarks_bar, "Show bookmarks bar");
         ui.add_space(4.0);
         ui.add(egui::TextEdit::singleline(&mut self.bookmark_filter).hint_text("Search bookmarks").desired_width(f32::INFINITY));
@@ -1560,13 +1557,11 @@ impl Browser {
                 ui.label(RichText::new("No bookmarks match.").weak());
             }
         });
-        if let Some(save) = finish_edit {
-            if let Some((orig, title, url)) = self.bookmark_edit.take() {
-                if save {
+        if let Some(save) = finish_edit
+            && let Some((orig, title, url)) = self.bookmark_edit.take()
+                && save {
                     self.save_bookmark_edit(&orig, title, url);
                 }
-            }
-        }
         if let Some(url) = start_edit {
             self.edit_bookmark(&url);
         }
@@ -1603,11 +1598,10 @@ impl Browser {
             if ui.button("Clear finished").clicked() {
                 self.downloads.clear_finished();
             }
-            if let Some(dir) = self.download_dir() {
-                if ui.button("Open downloads folder").clicked() {
+            if let Some(dir) = self.download_dir()
+                && ui.button("Open downloads folder").clicked() {
                     open_path(&dir);
                 }
-            }
         });
         ui.add_space(6.0);
         let mut running = false;
@@ -1640,11 +1634,10 @@ impl Browser {
                                     if ui.small_button("Open").clicked() {
                                         open_path(path);
                                     }
-                                    if let Some(parent) = path.parent() {
-                                        if ui.small_button("Show in folder").clicked() {
+                                    if let Some(parent) = path.parent()
+                                        && ui.small_button("Show in folder").clicked() {
                                             open_path(parent);
                                         }
-                                    }
                                 }
                             });
                         },

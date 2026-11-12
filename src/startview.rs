@@ -121,11 +121,10 @@ fn handle(stream: TcpStream, prefix: &str, shared: &Shared) {
             if h.is_empty() {
                 break;
             }
-            if let Some((k, v)) = h.split_once(':') {
-                if k.eq_ignore_ascii_case("range") {
+            if let Some((k, v)) = h.split_once(':')
+                && k.eq_ignore_ascii_case("range") {
                     range = Some(v.trim().to_string());
                 }
-            }
         }
         let head = method == "HEAD";
         let reply = match target.strip_prefix(prefix) {

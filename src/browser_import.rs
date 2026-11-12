@@ -185,11 +185,10 @@ pub fn import(source: &Source, bookmarks: bool, history: bool) -> Imported {
 // ----- Chromium -----
 
 fn chromium(dir: &Path, bookmarks: bool, history: bool, out: &mut Imported) -> Result<(), String> {
-    if bookmarks {
-        if let Ok(text) = std::fs::read_to_string(dir.join("Bookmarks")) {
+    if bookmarks
+        && let Ok(text) = std::fs::read_to_string(dir.join("Bookmarks")) {
             out.bookmarks = chromium_bookmarks(&text);
         }
-    }
     if history && dir.join("History").is_file() {
         let db = open_copy(&dir.join("History"))?;
         let mut stmt = db
