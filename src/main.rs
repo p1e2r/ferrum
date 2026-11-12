@@ -31,6 +31,7 @@ mod overlay_ui;
 mod pagescript;
 mod power;
 mod profile;
+mod profiles;
 mod reader;
 mod settings_page;
 mod startview;
@@ -80,15 +81,23 @@ pub fn tls_config() -> ureq::tls::TlsConfig {
 struct Args {
     url: Option<String>,
     private: bool,
+    /// Which profile to open (`--profile <id>`).
+    profile: String,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { url: None, private: false };
-    for arg in std::env::args().skip(1) {
+    let mut args = Args { url: None, private: false, profile: profiles::DEFAULT_ID.into() };
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--profile" => {
+                if let Some(id) = it.next().filter(|id| id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !id.is_empty()) {
+                    args.profile = id;
+                }
+            },
             "--private" | "-p" => args.private = true,
             "--help" | "-h" => {
-                println!("Usage: ferrum [--private] [URL]");
+                println!("Usage: ferrum [--private] [--profile ID] [URL]");
                 std::process::exit(0);
             },
             "--version" | "-V" => {
@@ -111,8 +120,8 @@ enum App {
 impl ApplicationHandler<WakeUp> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let App::Starting { proxy, args } = self {
-            let args = args.take().unwrap_or(Args { url: None, private: false });
-            let browser = Browser::new(event_loop, proxy.clone(), args.url, args.private);
+            let args = args.take().unwrap_or(Args { url: None, private: false, profile: profiles::DEFAULT_ID.into() });
+            let browser = Browser::new(event_loop, proxy.clone(), args.url, args.private, args.profile);
             *self = App::Running(Box::new(browser));
         }
     }

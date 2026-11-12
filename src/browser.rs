@@ -312,6 +312,15 @@ pub struct Browser {
     pub(crate) start_video_wanted: bool,
     /// The battery, for energy saver.
     power: Arc<Mutex<crate::power::Power>>,
+    /// This window's profile (see profiles.rs).
+    pub(crate) profile_id: String,
+    pub(crate) profile_info: crate::profiles::ProfileInfo,
+    /// Waiting for the user to sign in to Google, to link the account.
+    pub(crate) google_linking: bool,
+    pub(crate) profile_menu_open: bool,
+    /// The linked Google account's picture: (address, texture), and one being downloaded.
+    pub(crate) avatar: Option<(String, egui::TextureHandle)>,
+    avatar_pending: Shared<Option<(String, egui::ColorImage)>>,
     /// When the window was last drawn (energy saver caps it at 30 a second).
     last_frame: Instant,
     /// A web notification: (site, title, body, since).
@@ -349,8 +358,8 @@ pub struct Browser {
 }
 
 impl Browser {
-    pub fn new(event_loop: &ActiveEventLoop, proxy: EventLoopProxy<WakeUp>, initial_url: Option<String>, private: bool) -> Self {
-        let mut profile = Profile::load(if private { None } else { Profile::default_dir() });
+    pub fn new(event_loop: &ActiveEventLoop, proxy: EventLoopProxy<WakeUp>, initial_url: Option<String>, private: bool, profile_id: String) -> Self {
+        let mut profile = Profile::load(if private { None } else { crate::profiles::dir(&profile_id) });
         profile.settings.fit_search_engine_to_region();
         crate::timing("profile loaded");
 
@@ -468,6 +477,12 @@ impl Browser {
             start_shown: false,
             start_video_wanted: false,
             last_frame: Instant::now(),
+            profile_info: crate::profiles::get(&profile_id),
+            profile_id,
+            google_linking: false,
+            profile_menu_open: false,
+            avatar: None,
+            avatar_pending: Default::default(),
             power: {
                 let p = proxy.clone();
                 crate::power::watch(Arc::new(move || {
@@ -526,6 +541,7 @@ impl Browser {
             browser.open_home_tab();
         }
         browser.downloads.dir = browser.download_dir();
+        browser.fetch_avatar();
         crate::timing("tabs opened");
         browser.maybe_check_for_updates();
         browser
@@ -629,6 +645,11 @@ impl Browser {
                 }
                 true
             });
+        #[cfg(target_os = "macos")]
+        if let Some(id) = crate::profiles::store_identifier(&self.profile_id).filter(|_| !private) {
+            use wry::WebViewBuilderExtDarwin;
+            builder = builder.with_data_store_identifier(id);
+        }
         if !user_agent.is_empty() {
             builder = builder.with_user_agent(user_agent);
         } else if cfg!(target_os = "macos") {
@@ -812,6 +833,83 @@ impl Browser {
         let _ = webview.set_visible(false);
         let _ = webview.evaluate_script("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})");
         self.parked = Some((tab, Instant::now()));
+    }
+
+    // ----- profiles (profiles.rs) -----
+
+    /// Start linking a Google account: sign in to Google in this profile.
+    pub(crate) fn link_google_account(&mut self) {
+        self.google_linking = true;
+        let url = "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.google.com%2F";
+        if let Ok(u) = Url::parse(url) {
+            self.open_tab(Some(u));
+        }
+        self.toast("Sign in to Google — Ferrum links the account when you're signed in");
+    }
+
+    pub(crate) fn unlink_google_account(&mut self) {
+        crate::profiles::update(&self.profile_id, |p| p.google = None);
+        self.profile_info = crate::profiles::get(&self.profile_id);
+        self.avatar = None;
+        self.toast("Google account unlinked (you're still signed in to Google's sites)");
+    }
+
+    /// A Google page showed which account is signed in.
+    fn google_account_seen(&mut self, account: crate::profiles::GoogleAccount) {
+        if self.profile.is_private() {
+            return;
+        }
+        let linked = self.profile_info.google.as_ref();
+        // Only link when asked to; keep a linked account's details up to date.
+        if !self.google_linking && linked.is_none_or(|g| g.email != account.email) {
+            return;
+        }
+        if linked != Some(&account) {
+            let email = account.email.clone();
+            crate::profiles::update(&self.profile_id, |p| p.google = Some(account));
+            self.profile_info = crate::profiles::get(&self.profile_id);
+            if self.google_linking {
+                self.toast(format!("Linked to {email}"));
+            }
+        }
+        self.google_linking = false;
+        self.fetch_avatar();
+        self.window.request_redraw();
+    }
+
+    /// Download the linked account's picture for the profile button.
+    pub(crate) fn fetch_avatar(&mut self) {
+        let Some(url) = self.profile_info.google.as_ref().and_then(|g| g.picture.clone()) else { return };
+        if self.avatar.as_ref().is_some_and(|(u, _)| *u == url) {
+            return;
+        }
+        let slot = self.avatar_pending.clone();
+        let proxy = self.proxy.clone();
+        let _ = std::thread::Builder::new().name("avatar".into()).spawn(move || {
+            let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(crate::tls_config()).timeout_global(Some(Duration::from_secs(20))).build().into();
+            let bytes = agent.get(&url).call().ok().and_then(|mut r| r.body_mut().with_config().limit(4 * 1024 * 1024).read_to_vec().ok());
+            if let Some(img) = bytes.and_then(|b| image::load_from_memory(&b).ok()) {
+                let img = img.resize_to_fill(96, 96, image::imageops::FilterType::Triangle).to_rgba8();
+                let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some((url, color));
+                }
+                let _ = proxy.send_event(WakeUp);
+            }
+        });
+    }
+
+    /// The profile button's picture, once downloaded.
+    pub(crate) fn avatar_texture(&mut self, ctx: &egui::Context) -> Option<egui::TextureId> {
+        if let Some((url, image)) = self.avatar_pending.lock().ok().and_then(|mut s| s.take()) {
+            self.avatar = Some((url, ctx.load_texture("avatar", image, egui::TextureOptions::LINEAR)));
+        }
+        self.avatar.as_ref().map(|(_, t)| t.id())
+    }
+
+    /// Re-read this profile's name, colour and account (after changes in settings).
+    pub(crate) fn refresh_profile_info(&mut self) {
+        self.profile_info = crate::profiles::get(&self.profile_id);
     }
 
     /// Turn energy saver on or off as the battery changes.
@@ -1238,6 +1336,13 @@ impl Browser {
                 self.tabs[i].blocked = m["count"].as_u64().unwrap_or(0) as u32;
                 self.window.request_redraw();
             },
+            "google-account" => {
+                let label = m["label"].as_str().unwrap_or_default();
+                let picture = m["picture"].as_str().map(str::to_owned);
+                if let Some(account) = crate::profiles::parse_account_label(label, picture) {
+                    self.google_account_seen(account);
+                }
+            },
             "download" => {
                 // The PDF viewer's Download button.
                 if let Some(url) = m["url"].as_str().and_then(|u| Url::parse(u).ok()) {
@@ -1346,8 +1451,9 @@ impl Browser {
 
     /// Close the menu and every popup.
     pub(crate) fn close_popups(&mut self) {
-        let any = self.menu_open || self.site_info_open || self.tab_menu.is_some() || self.link_menu.is_some() || self.editing;
+        let any = self.menu_open || self.profile_menu_open || self.site_info_open || self.tab_menu.is_some() || self.link_menu.is_some() || self.editing;
         self.menu_open = false;
+        self.profile_menu_open = false;
         self.site_info_open = false;
         self.tab_menu = None;
         self.link_menu = None;
@@ -1534,7 +1640,7 @@ impl Browser {
             "0" if cmd => self.set_zoom(1.0),
             "q" if cmd && cfg!(target_os = "macos") => self.request_quit(),
             "F11" => self.toggle_window_fullscreen(),
-            "Escape" if self.site_info_open || self.menu_open || self.tab_menu.is_some() || self.link_menu.is_some() => self.close_popups(),
+            "Escape" if self.site_info_open || self.menu_open || self.profile_menu_open || self.tab_menu.is_some() || self.link_menu.is_some() => self.close_popups(),
             "Escape" if self.find.open => self.close_find(),
             "Escape" if self.active_tab().reader.is_some() => self.toggle_reader(),
             "ArrowLeft" if s.alt => self.go_back(),
@@ -2251,8 +2357,16 @@ impl Browser {
             .with_autoplay(true)
             .with_incognito(self.profile.is_private())
             .with_bounds(wry::Rect { position: PhysicalPosition::new(0, 0).into(), size: PhysicalSize::new(1, 1).into() })
-            .with_ipc_handler(move |request| queue.push(Event::Ipc(crate::startview::START_ID, request.into_body())))
-            .build_as_child(&*self.window);
+            .with_ipc_handler(move |request| queue.push(Event::Ipc(crate::startview::START_ID, request.into_body())));
+        #[cfg(target_os = "macos")]
+        let result = match crate::profiles::store_identifier(&self.profile_id).filter(|_| !self.profile.is_private()) {
+            Some(id) => {
+                use wry::WebViewBuilderExtDarwin;
+                result.with_data_store_identifier(id)
+            },
+            None => result,
+        };
+        let result = result.build_as_child(&*self.window);
         match result {
             Ok(view) => {
                 self.start_data = None;

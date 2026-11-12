@@ -33,6 +33,7 @@ const ROUND_WINDOWS: bool = cfg!(target_os = "macos");
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OverlayKind {
     Menu,
+    ProfileMenu,
     Suggestions,
     SiteInfo,
     TabMenu,

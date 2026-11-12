@@ -251,6 +251,26 @@ impl Gradient {
     }
 }
 
+/// A profile's picture: the Google account's, or its initial on its colour.
+pub(crate) fn profile_avatar(ui: &mut Ui, info: &crate::profiles::ProfileInfo, picture: Option<egui::TextureId>, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    paint_avatar(ui, rect, info, picture);
+}
+
+fn paint_avatar(ui: &Ui, rect: egui::Rect, info: &crate::profiles::ProfileInfo, picture: Option<egui::TextureId>) {
+    let r = rect.width().min(rect.height()) / 2.0;
+    match picture {
+        Some(tex) => {
+            egui::Image::new((tex, rect.size())).corner_radius(r.min(255.0) as u8).paint_at(ui, rect);
+        },
+        None => {
+            let [cr, cg, cb] = info.color;
+            ui.painter().circle_filled(rect.center(), r, Color32::from_rgb(cr, cg, cb));
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, info.initial(), FontId::proportional(r * 1.15), Color32::WHITE);
+        },
+    }
+}
+
 /// A tab's close button.
 const CLOSE_SIZE: f32 = 22.0;
 
@@ -863,8 +883,28 @@ impl Browser {
                         let menu = icon_button(ui, Icon::Menu, button, true, "Menu");
                         if menu.clicked() {
                             self.menu_open = !self.menu_open;
+                            self.profile_menu_open = false;
                         }
                         ui.memory_mut(|m| m.data.insert_temp(Id::new("menu_button"), menu.rect));
+                        // The profile button: initial or Google picture.
+                        if !self.profile.is_private() {
+                            let info = self.profile_info.clone();
+                            let avatar = self.avatar_texture(ui.ctx());
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(button), Sense::click());
+                            if resp.hovered() {
+                                ui.painter().rect_filled(rect, ui.visuals().widgets.hovered.corner_radius, ui.visuals().widgets.hovered.weak_bg_fill);
+                            }
+                            paint_avatar(ui, rect.shrink(4.0), &info, avatar);
+                            let tip = match &info.google {
+                                Some(g) => format!("{}\n{}", info.display_name(), g.email),
+                                None => info.display_name(),
+                            };
+                            if resp.on_hover_text(tip).clicked() {
+                                self.profile_menu_open = !self.profile_menu_open;
+                                self.menu_open = false;
+                            }
+                            ui.memory_mut(|m| m.data.insert_temp(Id::new("profile_button"), rect));
+                        }
                         let dl = if show_dl || active_downloads > 0 {
                             icon_button(ui, Icon::Download, button, true, "Downloads (Ctrl+J)")
                         } else {

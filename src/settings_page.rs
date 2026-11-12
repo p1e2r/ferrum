@@ -30,6 +30,7 @@ use crate::theme::{ThemePreset, mix};
 pub enum Section {
     #[default]
     Appearance,
+    Profiles,
     Tabs,
     StartPage,
     Search,
@@ -42,8 +43,9 @@ pub enum Section {
 }
 
 impl Section {
-    const ALL: [Section; 10] = [
+    const ALL: [Section; 11] = [
         Section::Appearance,
+        Section::Profiles,
         Section::Tabs,
         Section::StartPage,
         Section::Search,
@@ -58,6 +60,7 @@ impl Section {
     fn name(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
+            Section::Profiles => "Profiles",
             Section::Tabs => "Tabs & toolbar",
             Section::StartPage => "Start page",
             Section::Search => "Search & address bar",
@@ -73,6 +76,7 @@ impl Section {
     fn blurb(self) -> &'static str {
         match self {
             Section::Appearance => "Themes, colours and the size of the interface.",
+            Section::Profiles => "Each profile has its own bookmarks, history, settings, cookies and sign-ins, and opens in its own window.",
             Section::Tabs => "Where tabs go and which buttons the toolbar shows.",
             Section::StartPage => "What the start page shows when you open a new tab.",
             Section::Search => "Your search engine and what the address bar suggests.",
@@ -89,6 +93,7 @@ impl Section {
 /// Every setting on the page.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Setting {
+    Profiles,
     Lite,
     EnergySaver,
     Theme,
@@ -173,6 +178,7 @@ use Section as S;
 use Setting as T;
 
 const ITEMS: &[Item] = &[
+    item(S::Profiles, T::Profiles, "Profiles", "", "profile person people account google link sign in switch user", true),
     item(S::Appearance, T::Lite, "Lite mode", "For slow or older computers. Turns off animations and fancy start-page backgrounds, puts unused tabs to sleep after 5 minutes, stops videos playing by themselves, and keeps the web engine's memory use low.", "lite slow old low end performance fast speed lag memory ram battery optimize optimise", false),
     item(S::Appearance, T::EnergySaver, "Energy saver", "Saves battery: pages and Ferrum draw at 30 frames a second, unused tabs sleep after 2 minutes, videos in other tabs pause, and no animations. A green leaf shows in the toolbar while it's on.", "energy saver battery power save fps frame rate 30 sleep laptop unplugged", false),
     item(S::Appearance, T::Theme, "Theme", "Colours for the whole interface. Choosing a theme also sets its accent colour.", "colour color palette dark light skin look", true),
@@ -519,6 +525,7 @@ impl Browser {
             Setting::DomainOnly => {
                 toggle(ui, &mut s.domain_only_address, accent);
             },
+            Setting::Profiles => self.profiles_settings(ui),
             Setting::Lite => {
                 if toggle(ui, &mut s.lite, accent).changed() {
                     self.toast(if self.profile.settings.lite { "Lite mode on — new pages use less memory" } else { "Lite mode off" });
@@ -1131,6 +1138,111 @@ impl Browser {
         ui.add_space(4.0);
         if let Some(url) = open.and_then(|u| Url::parse(u).ok()) {
             self.open_tab(Some(url));
+        }
+    }
+}
+
+impl Browser {
+    /// Settings → Profiles: this profile, its Google account, and the others.
+    fn profiles_settings(&mut self, ui: &mut Ui) {
+        let me = self.profile_info.clone();
+        let all = crate::profiles::list();
+        let accent = self.accent();
+        let mut changed = false;
+        ui.vertical(|ui| {
+            // This profile.
+            ui.horizontal(|ui| {
+                crate::ui::profile_avatar(ui, &me, self.avatar_texture(ui.ctx()), 44.0);
+                ui.vertical(|ui| {
+                    let mut name = me.name.clone();
+                    let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(220.0).hint_text("Profile name"));
+                    if resp.changed() && !name.trim().is_empty() {
+                        crate::profiles::update(&me.id, |p| p.name = name.clone());
+                        changed = true;
+                    }
+                    ui.label(RichText::new("This window's profile").weak().size(12.0));
+                });
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Colour");
+                for c in crate::profiles::COLORS {
+                    let color = Color32::from_rgb(c[0], c[1], c[2]);
+                    let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                    ui.painter().circle_filled(r.center(), 9.0, color);
+                    if me.color == *c {
+                        ui.painter().circle_stroke(r.center(), 11.0, Stroke::new(2.0_f32, ui.visuals().strong_text_color()));
+                    }
+                    if resp.clicked() {
+                        crate::profiles::update(&me.id, |p| p.color = *c);
+                        changed = true;
+                    }
+                }
+            });
+            ui.add_space(10.0);
+            // Google account.
+            ui.label(RichText::new("Google account").strong());
+            match &me.google {
+                Some(g) => {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{} — {}", g.name, g.email)));
+                        if ui.button("Unlink").clicked() {
+                            self.unlink_google_account();
+                        }
+                    });
+                    ui.label(RichText::new("Linked by signing in to Google in this profile. Ferrum keeps only the name, email and picture shown on Google's pages, on this computer.").weak().size(12.0));
+                },
+                None => {
+                    ui.horizontal(|ui| {
+                        if ui.button("Link Google account…").clicked() {
+                            self.link_google_account();
+                        }
+                        if self.google_linking {
+                            ui.label(RichText::new("Waiting for you to sign in…").color(accent));
+                        }
+                    });
+                    ui.label(RichText::new("Sign in to Google in a tab; Ferrum shows your account on this profile. No passwords or tokens are kept by Ferrum.").weak().size(12.0));
+                },
+            }
+            ui.add_space(12.0);
+            // Other profiles.
+            ui.label(RichText::new("Other profiles").strong());
+            let others: Vec<_> = all.iter().filter(|p| p.id != me.id).cloned().collect();
+            if others.is_empty() {
+                ui.label(RichText::new("None yet.").weak());
+            }
+            for p in others {
+                ui.horizontal(|ui| {
+                    crate::ui::profile_avatar(ui, &p, None, 28.0);
+                    ui.label(p.display_name());
+                    if let Some(g) = &p.google {
+                        ui.label(RichText::new(&g.email).weak().size(12.0));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if p.id != crate::profiles::DEFAULT_ID && ui.small_button("Delete").on_hover_text("Deletes this profile's bookmarks, history and data").clicked() {
+                            let sure = rfd::MessageDialog::new()
+                                .set_title("Delete profile?")
+                                .set_description(format!("Delete “{}” and all its bookmarks, history, settings and sign-ins? This can't be undone. Close its window first.", p.display_name()))
+                                .set_buttons(rfd::MessageButtons::YesNo)
+                                .show();
+                            if sure == rfd::MessageDialogResult::Yes {
+                                crate::profiles::delete(&p.id);
+                            }
+                        }
+                        if ui.small_button("Open").clicked() {
+                            crate::profiles::launch(&p.id);
+                        }
+                    });
+                });
+            }
+            ui.add_space(6.0);
+            if ui.button("+ Add profile").clicked() {
+                let p = crate::profiles::create();
+                crate::profiles::launch(&p.id);
+            }
+        });
+        if changed {
+            self.refresh_profile_info();
         }
     }
 }

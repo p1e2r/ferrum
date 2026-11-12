@@ -46,6 +46,15 @@ impl Browser {
             let r = egui::Rect::from_min_size(pos2(menu_button.right() - 270.0, menu_button.bottom() + 4.0), vec2(270.0, 2000.0));
             requests.push((OverlayKind::Menu, fit(r)));
         }
+        let profile_button = memory_rect("profile_button");
+        if self.profile_menu_open && pressed_in_window && pressed_at.is_some_and(|p| !profile_button.contains(p)) {
+            self.profile_menu_open = false;
+        }
+        if self.profile_menu_open {
+            let button = profile_button;
+            let r = egui::Rect::from_min_size(pos2(button.right() - 300.0, button.bottom() + 4.0), vec2(300.0, 1000.0));
+            requests.push((OverlayKind::ProfileMenu, fit(r)));
+        }
 
         // Site information, under the padlock.
         let site_button = memory_rect("site_button");
@@ -130,6 +139,7 @@ impl Browser {
     pub(crate) fn draw_overlay(&mut self, kind: OverlayKind, ui: &mut Ui) {
         match kind {
             OverlayKind::Menu => self.menu_contents(ui),
+            OverlayKind::ProfileMenu => self.profile_menu_contents(ui),
             OverlayKind::Suggestions => self.suggestions_contents(ui),
             OverlayKind::SiteInfo => self.site_info_contents(ui),
             OverlayKind::TabMenu => {
@@ -378,6 +388,76 @@ impl Browser {
         }
         if let Some(url) = chosen {
             self.navigate_input(&url);
+        }
+    }
+
+    /// The profile button's menu: who this is, the Google account, other profiles.
+    fn profile_menu_contents(&mut self, ui: &mut Ui) {
+        let me = self.profile_info.clone();
+        let avatar = self.avatar_texture(ui.ctx());
+        let mut close = false;
+        ui.vertical_centered(|ui| {
+            ui.add_space(6.0);
+            crate::ui::profile_avatar(ui, &me, avatar, 56.0);
+            ui.label(RichText::new(me.display_name()).strong().size(16.0));
+            match &me.google {
+                Some(g) => {
+                    ui.label(RichText::new(&g.email).weak());
+                },
+                None => {
+                    ui.label(RichText::new("Not linked to a Google account").weak().size(12.0));
+                },
+            }
+            ui.add_space(6.0);
+        });
+        let width = ui.available_width();
+        let row = |ui: &mut Ui, text: &str| ui.add(egui::Button::new(text).frame(false).min_size(vec2(width, 28.0))).clicked();
+        if me.google.is_none() {
+            if row(ui, "Link Google account…") {
+                self.link_google_account();
+                close = true;
+            }
+        } else if row(ui, "Manage your Google Account") {
+            if let Ok(u) = Url::parse("https://myaccount.google.com/") {
+                self.open_tab(Some(u));
+            }
+            close = true;
+        }
+        ui.separator();
+        let others: Vec<_> = crate::profiles::list().into_iter().filter(|p| p.id != me.id).collect();
+        if !others.is_empty() {
+            ui.label(RichText::new("Other profiles").weak().size(12.0));
+            for p in others {
+                let resp = ui
+                    .horizontal(|ui| {
+                        ui.set_width(width);
+                        crate::ui::profile_avatar(ui, &p, None, 24.0);
+                        ui.label(p.display_name());
+                    })
+                    .response;
+                let resp = ui.interact(resp.rect, Id::new(("profile", &p.id)), egui::Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(resp.rect.expand(2.0), ui.visuals().widgets.hovered.corner_radius, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
+                }
+                if resp.clicked() {
+                    crate::profiles::launch(&p.id);
+                    close = true;
+                }
+            }
+            ui.separator();
+        }
+        if row(ui, "+ Add profile") {
+            let p = crate::profiles::create();
+            crate::profiles::launch(&p.id);
+            close = true;
+        }
+        if row(ui, "Manage profiles…") {
+            self.settings_section = crate::settings_page::Section::Profiles;
+            self.open_settings();
+            close = true;
+        }
+        if close {
+            self.profile_menu_open = false;
         }
     }
 

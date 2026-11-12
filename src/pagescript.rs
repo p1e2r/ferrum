@@ -139,6 +139,21 @@ pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String],
 
   if (!top) return;
 
+  // ----- linking a Google account (profiles.rs) -----
+  // On Google's pages, report which account is signed in (from the account
+  // button), so a profile can show it. Nothing leaves this computer.
+  if (/(^|\.)google\.[a-z.]+$/.test(location.hostname)) {{
+    const report = () => {{
+      const a = document.querySelector('a[href*="accounts.google.com/SignOutOptions"]') ||
+        Array.from(document.querySelectorAll("[aria-label]")).find((e) => /\(.+@.+\)/.test(e.getAttribute("aria-label")));
+      const label = a && a.getAttribute("aria-label");
+      if (!label) return;
+      const img = a.querySelector("img");
+      post({{ t: "google-account", label: label, picture: img ? img.src : null }});
+    }};
+    addEventListener("load", () => setTimeout(report, 1000));
+  }}
+
   // A click on the page closes Ferrum's menus and popups.
   window.addEventListener("mousedown", () => post({{ t: "click" }}), true);
 
