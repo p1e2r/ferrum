@@ -187,6 +187,26 @@ scripts/          build scripts for macOS, Linux and Windows
 
 Ferrum shows pages with the engine your OS provides, so a page looks the same as in Safari (macOS), Edge (Windows) or GNOME Web (Linux). Not built yet: extensions and sync. Linux runs under X11 (XWayland on Wayland desktops). Opening a page in a popup window (`window.open`) opens it in a new tab, so a few sign-in popups that talk back to their opener may not complete.
 
+## What's made for Ferrum, and what comes from others
+
+**Made for Ferrum** (this project, under the MIT license):
+
+- All the Rust code in `src/` — the interface, tabs, address bar and calculator, settings, profiles, bookmarks and history, import, downloads, the updater, ad blocking, reader mode, the new tab page, energy saver and Lite mode
+- The build scripts in `scripts/` and `docker/`, and the GitHub Actions workflow in `.github/`
+- The icon (`assets/icon.png`, `assets/icon-256.png`) and the macOS entitlements file
+- The documentation: this README and the wiki in `docs/wiki/`
+
+**From others**, used under their own licenses:
+
+| What | By | Where | License |
+|---|---|---|---|
+| The web engine that shows pages | Apple (WebKit), Microsoft (WebView2), the WebKitGTK project | Already on your computer, not in this repository | Their own |
+| pdf.js, the PDF viewer used on Linux | Mozilla | `assets/pdfjs/` (copied in unchanged) | Apache-2.0 |
+| Ad and tracker list | Peter Lowe ([pgl.yoyo.org](https://pgl.yoyo.org/adservers/)) | Downloaded when Ferrum runs, not in this repository | Free to use, see the site |
+| Rust libraries (crates) | Their authors | Listed in `Cargo.toml`, downloaded when building | Mostly MIT and/or Apache-2.0 |
+
+The main libraries: [wry](https://github.com/tauri-apps/wry) and [muda](https://github.com/tauri-apps/muda) (the Tauri project) for the web view and the macOS menu bar; [egui](https://github.com/emilk/egui) for drawing the interface; [winit](https://github.com/rust-windowing/winit) and [glutin](https://github.com/rust-windowing/glutin) for windows and OpenGL; [rustls](https://github.com/rustls/rustls) and [ureq](https://github.com/algesten/ureq) for Ferrum's own connections; [rusqlite](https://github.com/rusqlite/rusqlite) (SQLite) and [plist](https://github.com/ebarnard/rust-plist) for importing from other browsers; [image](https://github.com/image-rs/image), [serde](https://serde.rs), [rfd](https://github.com/PolyMeilex/rfd), [notify-rust](https://github.com/hoodie/notify-rust), [chrono](https://github.com/chronotope/chrono), [sha2](https://github.com/RustCrypto/hashes) and [dirs](https://github.com/dirs-dev/dirs-rs). `cargo tree` lists every one.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Dependencies keep their own licenses (mostly MIT and Apache-2.0). The PDF viewer used on Linux is [pdf.js](https://github.com/mozilla/pdf.js) (Apache-2.0, in `assets/pdfjs/`).
