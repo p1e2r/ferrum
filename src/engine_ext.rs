@@ -58,7 +58,6 @@ pub fn tune(webview: &wry::WebView, lite: bool) {
     }
     if let Some(settings) = WebViewExt::settings(&view) {
         settings.set_enable_page_cache(!lite);
-        settings.set_enable_dns_prefetching(true);
         settings.set_enable_smooth_scrolling(!lite);
     }
 }
@@ -83,3 +82,25 @@ pub fn set_low_memory(webview: &wry::WebView, low: bool) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn set_low_memory(_webview: &wry::WebView, _low: bool) {}
+
+/// Redraw a page view (after a popup over it closed).
+#[cfg(target_os = "linux")]
+pub fn repaint(webview: &wry::WebView) {
+    use gtk::prelude::WidgetExt;
+    use wry::WebViewExtUnix;
+    // Asking for a redraw isn't always enough after the view was hidden;
+    // a size change makes WebKitGTK lay out and draw everything again.
+    if let Ok(bounds) = webview.bounds() {
+        let size = bounds.size.to_physical::<u32>(1.0);
+        if size.height > 1 {
+            let mut smaller = bounds;
+            smaller.size = dpi::PhysicalSize::new(size.width, size.height - 1).into();
+            let _ = webview.set_bounds(smaller);
+            let _ = webview.set_bounds(bounds);
+        }
+    }
+    webview.webview().queue_draw();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn repaint(_webview: &wry::WebView) {}

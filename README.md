@@ -16,19 +16,23 @@ A fast, light desktop web browser with a native Rust interface.
 |---|---|
 | Browsing | Tabs (favicons, middle-click close, right-click: reload, duplicate, close others / to the right), back/forward, reload, home, address bar that searches or navigates; automatic retry and HTTPS→HTTP fallback when a site won't connect |
 | Web compatibility | Everything the system engine supports: video, WebGL, modern JavaScript and CSS |
+| Media and PDFs | Videos, audio (MP3, AAC, WAV, FLAC…), pictures and PDFs open in the tab instead of downloading. Open files from your computer with Ctrl+O or by dropping them on the window. PDFs on Linux use a built-in viewer (pdf.js) |
 | Address bar | Suggestions from bookmarks and history (↑/↓ to pick), selects all on click, choice of 6 search engines |
-| Bookmarks | Star button / Ctrl+D, bookmarks bar, bookmarks panel with reordering, start-page tiles |
+| Bookmarks | Star button / Ctrl+D, bookmarks bar, bookmarks panel with search, edit, remove (with undo) and reordering, right-click menus on the bar and start-page tiles |
+| Import from other browsers | Bookmarks and history from Chrome, Edge, Brave, Vivaldi, Opera, Arc, Firefox and Safari on the same computer |
 | History | Searchable history panel (fast even with thousands of entries), frequently-visited tiles, clear history |
 | Downloads | File links download automatically, "Save link/image as…", progress, cancel, open, show in folder; uses the site's cookies |
 | Page dialogs, forms, right-click | The engine's native ones (alerts, sign-in, dropdowns, colour and file pickers, context menu) |
 | View | Zoom per tab (Ctrl +/−/0, Ctrl+scroll), default zoom, full screen (F11), pages' own full-screen video etc. |
 | Privacy | Private windows (Ctrl+Shift+N — nothing written to disk), clear cookies & site data |
-| Session | Reopens your tabs at start-up, reopen closed tab (Ctrl+Shift+T), crashed-tab recovery |
+| Session | Reopens your tabs at start-up, reopen closed tab (Ctrl+Shift+T — instant for 2 minutes, where you left it), crashed-tab recovery |
+| Reload | Ctrl+R; Ctrl+Shift+R, Shift+F5 or Shift-click to reload without the cache |
 | Find in page | Ctrl+F: highlights every match, "3 of 12", Enter / Shift+Enter, match case |
 | Printing | Ctrl+P: the system print dialog (printers, save as PDF) |
 | Settings page | `ferrum://settings` (Ctrl+, or ☰ → Settings) in its own tab: sections down the side, search, and every option below |
 | Themes | 10 complete colour themes (Ferrum light/dark, Midnight, Graphite, Forest, Arctic, Plum, Paper, Sky, Rose, High contrast) plus any accent colour |
-| Customization | Interface size, density, corner rounding, tabs on top or down the side, which toolbar buttons show, start page title / background (gradient, colour or your own image) / clock / tiles, custom search engine, what new tabs open, download folder |
+| Customization | Interface size, density, corner rounding, tab shape (classic, pill, boxy, sharp), tab width and close buttons, tabs on top or down the side, which toolbar buttons show, light/dark with every theme, start page title / clock / tiles and background (a gradient of up to six colours, a solid colour, your own picture or a looping video), custom search engine, what new tabs open, download folder |
+| Lite mode | One switch for slow or older computers: no animations or fancy backgrounds, tabs sleep after 5 minutes, no autoplay, lower engine memory use. On by default on computers with two or fewer cores |
 | Privacy & web content | HTTPS-only mode, notification permission, custom user agent |
 | Theme | System / light / dark |
 | Ad & tracker blocking | Built in and on by default, inside the engine: content-blocker rules on macOS and Linux (like Safari's), a request filter on Windows, plus a page script that catches what's added later. Count on the padlock, switch it off per site. Peter Lowe's list (~3,500 servers), refreshed weekly |
@@ -39,7 +43,7 @@ A fast, light desktop web browser with a native Rust interface.
 | Developer tools | F12: the engine's own inspector, console and network tools; Ctrl+U page source with highlighting |
 | Notifications | Web notifications on every engine: Ferrum asks Allow/Block per site, shows a card in the window, and uses the system notification centre when Ferrum is in the background |
 | Bookmarks import/export | HTML bookmark files from/to Firefox, Chrome, Edge, Safari |
-| Updates | Checks GitHub once a day for a newer Ferrum (can be turned off) |
+| Updates | Checks GitHub once a day; "Update and restart" downloads the new version, checks it against the release's SHA-256 checksums, installs it and reopens your tabs |
 | Pinch zoom, swipe back | Trackpad gestures, handled by the engine |
 | Blocked search engines | In Indonesia (where DuckDuckGo is blocked) new installs search with Google; if a network replaces a search with a block page, Ferrum offers to repeat it with another engine |
 | Title bar | Like Chrome: tabs sit in the title bar with Ferrum's own minimise / maximise / close buttons (close turns red on hover), drag the empty strip to move the window, double-click to maximise, resize from the window edges. Round-hover ✕ on tabs. On macOS the traffic lights stay over a transparent title bar. Can be switched back to the system title bar in settings |
@@ -67,7 +71,9 @@ Light browsing works on old hardware; heavy web apps and video sites need more. 
 
 ## Download
 
-Every push to `main` publishes a versioned nightly release with builds for macOS, Windows and Linux on the [Releases](../../releases) page; the newest is always marked **Latest** ([direct link](../../releases/latest)). Nightlies may still have bugs. Ferrum 0.7.8 and later update themselves in one click from the ☰ menu.
+Get the newest version from the [Releases](../../releases/latest) page: a `.dmg` for Apple Silicon or Intel Macs, a `.zip` for Windows and a `.tar.gz` for Linux (x86-64 or ARM). After that, Ferrum updates itself in one click from the ☰ menu.
+
+On macOS, Ferrum isn't signed with an Apple developer certificate yet, so the first time, allow it in System Settings → Privacy & Security → "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Ferrum.app`). Updates installed by Ferrum don't need this.
 
 ## Build
 
@@ -94,7 +100,12 @@ scripts/build.sh windows   # x86_64 .zip, cross-compiled with cargo-xwin
 scripts/build.sh all
 ```
 
-Results land in `dist/`. GitHub Actions builds all platforms natively on every push and publishes a nightly release, marked as the latest.
+Results land in `dist/`. GitHub Actions builds and tests all platforms natively on every push.
+
+### Branches and releases
+
+- **`dev`** is where development happens: every push is built and tested, nothing is published.
+- **`main`** is the release branch: every push (usually merging `dev`) publishes the next version — `Cargo.toml`'s version, or the next free patch number — as the **Latest** release, with a `SHA256SUMS` file and notes listing the changes.
 
 ## Keyboard shortcuts
 
@@ -152,7 +163,10 @@ src/blocker.rs    ad and tracker blocking
 src/reader.rs     reader mode (article extraction + native layout)
 src/devtools.rs   page-source viewer
 src/bookmarks_io.rs  bookmark import/export (Netscape HTML)
-src/updates.rs    update check against GitHub releases
+src/updates.rs    update check, one-click install, checksum check
+src/startview.rs  video new tab page and PDF viewer, from a private local server
+src/engine_ext.rs engine features wry doesn't expose (hard reload, cache tuning)
+src/browser_import.rs  import from Chrome, Edge, Firefox, Safari…
 src/theme.rs      colour themes
 src/profile.rs    settings, bookmarks, history, session (JSON)
 src/downloads.rs  download manager
@@ -168,4 +182,4 @@ Ferrum shows pages with the engine your OS provides, so a page looks the same as
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Dependencies keep their own licenses (mostly MIT and Apache-2.0).
+MIT — see [LICENSE](LICENSE). Dependencies keep their own licenses (mostly MIT and Apache-2.0). The PDF viewer used on Linux is [pdf.js](https://github.com/mozilla/pdf.js) (Apache-2.0, in `assets/pdfjs/`).

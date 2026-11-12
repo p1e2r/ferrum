@@ -79,7 +79,7 @@ impl Overlays {
         self.list.iter().map(|o| o.kind).collect()
     }
 
-    /// Make the open popups match `requests`.
+    /// Make the open popups match `requests`. Returns true if one was closed.
     pub fn sync(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -88,7 +88,8 @@ impl Overlays {
         requests: &[(OverlayKind, egui::Rect)],
         ppp: f32,
         settings: &Settings,
-    ) {
+    ) -> bool {
+        let mut closed = false;
         // Close popups that are no longer wanted.
         let mut i = 0;
         while i < self.list.len() {
@@ -96,6 +97,7 @@ impl Overlays {
                 i += 1;
             } else {
                 let mut overlay = self.list.remove(i);
+                closed = true;
                 gl_window.make_current_on(&overlay.surface);
                 if let Some(mut egui) = overlay.egui.take() {
                     egui.destroy();
@@ -155,6 +157,7 @@ impl Overlays {
                 gl_window.window.request_redraw();
             }
         }
+        closed
     }
 
     /// Paint one popup. `contents` draws it; the popup frame is drawn around it.

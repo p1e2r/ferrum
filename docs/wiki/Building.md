@@ -51,16 +51,18 @@ On every push to `main` and every pull request, GitHub Actions builds and tests 
 
 `Cargo.toml` holds the base version. In CI, each build job works out the release version *before* compiling: the base version, or the next free patch number if that version has already been released (0.5.0 → 0.5.1 → …). It's passed to the compiler as `FERRUM_VERSION`, so the app's About page, its file names and the release all show the same number. Bump the major/minor number in `Cargo.toml` for bigger changes. Local builds show `Cargo.toml`'s version.
 
-### Releases
+### Branches and releases
 
-Every build is published as a versioned nightly release, and the newest is marked **Latest** (so `releases/latest` always points at it, and Ferrum's update check finds it):
+- **`dev`** — day-to-day development. Every push is built and tested on all platforms; nothing is published. Builds can be downloaded from the run's artifacts in GitHub Actions.
+- **`main`** — releases. Every push (normally a merge from `dev`) publishes the next version as the **Latest** release, so `releases/latest` always points at it and Ferrum's updater finds it. The version is `Cargo.toml`'s, or the next free patch number (1.0.0 → 1.0.1 → …); bump the major or minor version in `Cargo.toml` for bigger changes.
+- **A version tag** (`git tag v1.2.0 && git push origin v1.2.0`) publishes exactly that version.
 
-- **Every push to `main`** publishes the next version (`Cargo.toml`'s version, or the next free patch number).
-- **Pushing a version tag** publishes that version:
+Each release has the five packages, a `SHA256SUMS` file (the updater refuses a download whose checksum doesn't match) and notes generated from the changes since the previous release. One job picks the version for all platforms, so every package and the app inside it agree.
+
+To ship: merge `dev` into `main` and push.
 
 ```sh
-git tag v0.8.0
-git push origin v0.8.0
+git switch main && git merge --ff-only dev && git push
 ```
 
 Pull requests are built and tested but publish nothing.

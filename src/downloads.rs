@@ -204,6 +204,8 @@ fn run(
         None => {
             let dir = dir
                 .or_else(dirs::download_dir)
+                // A Downloads folder the system doesn't know about, then home.
+                .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")).filter(|d| d.is_dir()))
                 .or_else(dirs::home_dir)
                 .ok_or("No downloads folder found")?;
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

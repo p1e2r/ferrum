@@ -1143,6 +1143,10 @@ impl Browser {
                 Event::Download(id, url) => {
                     if let Ok(url) = Url::parse(&url) {
                         let referer = self.tab_index(id).and_then(|i| self.tabs[i].page_url.clone());
+                        // The page isn't changing after all: stop the tab's loading spinner.
+                        if let Some(i) = self.tab_index(id) {
+                            self.tabs[i].is_loading = false;
+                        }
                         self.start_download(url, referer);
                     }
                 },
@@ -1186,8 +1190,8 @@ impl Browser {
                     self.window.request_redraw();
                 }
             },
-            "click" => {
-                // A click on the page closes Ferrum's popups.
+            "click" | "escape" => {
+                // A click on the page, or Escape, closes Ferrum's popups.
                 if i == self.active {
                     self.close_popups();
                 }
@@ -1325,6 +1329,14 @@ impl Browser {
     /// Returns false when the browser should quit.
     pub fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) -> bool {
         if window_id != self.window.id() {
+            // Escape closes menus even when the key reaches a popup's own window.
+            if let WindowEvent::KeyboardInput { event: key, .. } = &event {
+                if key.state == ElementState::Pressed && key.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) {
+                    self.close_popups();
+                    self.window.request_redraw();
+                    return true;
+                }
+            }
             self.overlays.handle_event(window_id, &event, &self.window);
             return true;
         }
@@ -2002,6 +2014,9 @@ impl Browser {
         let page_visible = r.is_positive();
         self.layout_start_view(bounds, page_visible);
         let lite = self.profile.settings.lite;
+        // The active tab's page was hidden (reader mode, an internal page):
+        // the keyboard goes back to Ferrum's window.
+        let mut active_hidden = false;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let Some(webview) = &tab.webview else { continue };
             let visible = i == self.active && page_visible && tab.internal.is_none() && tab.reader.is_none();
@@ -2015,6 +2030,13 @@ impl Browser {
             if visible != tab.shown {
                 tab.shown = visible;
                 let _ = webview.set_visible(visible);
+                if visible {
+                    // Linux: a page shown again isn't always redrawn by itself.
+                    crate::engine_ext::repaint(webview);
+                }
+                if !visible && i == self.active {
+                    active_hidden = true;
+                }
                 if lite {
                     crate::engine_ext::set_low_memory(webview, !visible);
                 }
@@ -2022,6 +2044,9 @@ impl Browser {
                     let _ = webview.focus();
                 }
             }
+        }
+        if active_hidden {
+            self.focus_interface();
         }
         // Typing in the address bar (or any field) takes the keyboard from the page.
         if interface_has_keyboard && !self.page_unfocused {
@@ -2234,7 +2259,7 @@ impl Browser {
                     self.window.request_redraw();
                 }
             },
-            "click" => self.close_popups(),
+            "click" | "escape" => self.close_popups(),
             _ => {},
         }
         self.window.request_redraw();
@@ -2315,7 +2340,15 @@ impl Browser {
         let requests = std::mem::take(&mut self.overlay_requests);
         let mut overlays = std::mem::take(&mut self.overlays);
         let gl_window = self.gl_window.clone();
-        overlays.sync(event_loop, &gl_window, &self.gl, &requests, self.ppp, &self.profile.settings);
+        if overlays.sync(event_loop, &gl_window, &self.gl, &requests, self.ppp, &self.profile.settings) {
+            // Linux: WebKitGTK doesn't always redraw what a closed popup covered.
+            if let Some(w) = self.active_webview() {
+                crate::engine_ext::repaint(w);
+            }
+            if let Some(w) = &self.start_view {
+                crate::engine_ext::repaint(w);
+            }
+        }
         for kind in overlays.kinds() {
             overlays.draw(kind, &gl_window, |ui| self.draw_overlay(kind, ui));
         }

@@ -52,6 +52,10 @@ On Windows release builds `windows_subsystem = "windows"` hides the console wind
 
 `hard_reload` reloads without the cache (WebKit `reloadFromOrigin`, WebKitGTK `reload_bypass_cache`, WebView2 DevTools `Page.reload` with `ignoreCache`). `tune` sets WebKitGTK's cache model to *web browser* and enables its back/forward page cache and DNS prefetching; the other engines do this by default. Each engine keeps a persistent disk cache in the profile (WebKit on macOS in its own store). The last closed tab stays loaded, hidden, for two minutes (`Browser::park`), so reopening it is instant.
 
+## `startview.rs` — video new tab page and PDF viewer
+
+A tiny HTTP server inside Ferrum, on 127.0.0.1 under a random secret path (the engines don't reliably play video from a custom URL scheme). It serves the new tab page with a video background (`html`, shown in one shared web view by `Browser::layout_start_view`), the video with byte ranges, and on Linux the pdf.js PDF viewer (`pdf`, `pdf-data`, `pdfjs/…`). `shown_url` makes a PDF in the viewer show its own address.
+
 ## `pagescript.rs`, `adblock.rs`, `notify.rs`
 
 `pagescript::script` builds the script added to every page; `mute` returns the script that mutes or unmutes a page's media. `adblock::rules_json` builds the rule list; `prepare` / `attach` install it in each platform's engine. `notify::system_notification` shows a desktop notification. See [Page script](Page-Script).

@@ -101,6 +101,9 @@ pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String],
       e.preventDefault();
       e.stopImmediatePropagation();
       post({{ t: "key", key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, alt: e.altKey }});
+    }} else if (e.key === "Escape") {{
+      // Closes Ferrum's menus; the page still gets it too.
+      post({{ t: "escape" }});
     }}
   }}, true);
   // Mouse back / forward buttons.
