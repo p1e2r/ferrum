@@ -27,14 +27,14 @@ pub fn accent(settings: &Settings) -> Color32 {
 pub fn style_key(s: &Settings) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness, s.animate(), s.potato).hash(&mut h);
+    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness, s.animate(), s.lite).hash(&mut h);
     h.finish().max(1)
 }
 
 /// Apply theme, accent colour, size, density and rounding to egui.
 pub fn style(ctx: &egui::Context, settings: &Settings) {
-    // Potato PC mode: simpler edges are cheaper to draw.
-    ctx.tessellation_options_mut(|t| t.feathering = !settings.potato);
+    // Lite mode: simpler edges are cheaper to draw.
+    ctx.tessellation_options_mut(|t| t.feathering = !settings.lite);
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;
         o.fallback_theme = egui::Theme::Light;
@@ -1136,7 +1136,7 @@ impl Browser {
         // Background, and whether text on it should be light.
         let mut light_text = false;
         match settings.start_look() {
-            // Video falls back to the plain look here (Potato mode, or no video chosen).
+            // Video falls back to the plain look here (Lite mode, or no video chosen).
             StartBackground::Plain | StartBackground::Video => {
                 painter.rect_filled(rect, 0.0, ui.visuals().window_fill);
             },

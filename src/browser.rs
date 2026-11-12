@@ -575,8 +575,8 @@ impl Browser {
             .with_clipboard(true)
             .with_hotkeys_zoom(true)
             .with_back_forward_navigation_gestures(true)
-            // Potato PC mode: videos wait for a click instead of playing by themselves.
-            .with_autoplay(!self.profile.settings.potato)
+            // Lite mode: videos wait for a click instead of playing by themselves.
+            .with_autoplay(!self.profile.settings.lite)
             .with_incognito(private)
             .with_ipc_handler(move |request| q1.push(Event::Ipc(tab_id, request.into_body())))
             .with_document_title_changed_handler(move |title| q2.push(Event::Title(tab_id, title)))
@@ -628,7 +628,7 @@ impl Browser {
         match builder.build_as_child(&*self.window) {
             Ok(webview) => {
                 crate::adblock::attach(&webview);
-                crate::engine_ext::tune(&webview, self.profile.settings.potato);
+                crate::engine_ext::tune(&webview, self.profile.settings.lite);
                 #[cfg(target_os = "windows")]
                 if let Some(dark) = self.page_dark {
                     use wry::WebViewExtWindows;
@@ -2001,7 +2001,7 @@ impl Browser {
         );
         let page_visible = r.is_positive();
         self.layout_start_view(bounds, page_visible);
-        let potato = self.profile.settings.potato;
+        let lite = self.profile.settings.lite;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let Some(webview) = &tab.webview else { continue };
             let visible = i == self.active && page_visible && tab.internal.is_none() && tab.reader.is_none();
@@ -2015,7 +2015,7 @@ impl Browser {
             if visible != tab.shown {
                 tab.shown = visible;
                 let _ = webview.set_visible(visible);
-                if potato {
+                if lite {
                     crate::engine_ext::set_low_memory(webview, !visible);
                 }
                 if visible && !interface_has_keyboard {
@@ -2100,7 +2100,7 @@ impl Browser {
     /// Show, place, update or hide the video start page.
     fn layout_start_view(&mut self, bounds: (i32, i32, u32, u32), page_visible: bool) {
         let wanted = self.start_video_wanted && page_visible;
-        // Free the video page when it's switched off (or Potato PC mode is on).
+        // Free the video page when it's switched off (or Lite mode is on).
         if self.start_view.is_some() && !self.start_video_enabled() {
             self.start_view = None;
             self.start_data = None;

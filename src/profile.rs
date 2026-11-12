@@ -187,8 +187,9 @@ pub struct Settings {
     pub domain_only_address: bool,
     /// Animate panels, switches and fades.
     pub animations: bool,
-    /// Potato PC mode: everything tuned for slow, low-memory computers.
-    pub potato: bool,
+    /// Lite mode: everything tuned for slow, low-memory computers.
+    #[serde(alias = "potato")]
+    pub lite: bool,
 
     // Start page
     pub start_show_search: bool,
@@ -269,29 +270,29 @@ impl Default for GradientSource {
 }
 
 impl Settings {
-    /// Animations, unless Potato PC mode is on.
+    /// Animations, unless Lite mode is on.
     pub fn animate(&self) -> bool {
-        self.animations && !self.potato
+        self.animations && !self.lite
     }
 
-    /// Minutes before an unused tab is put to sleep (sooner in Potato PC mode).
+    /// Minutes before an unused tab is put to sleep (sooner in Lite mode).
     pub fn sleep_after_minutes(&self) -> u32 {
-        if self.potato { self.sleep_minutes.min(5) } else { self.sleep_minutes }
+        if self.lite { self.sleep_minutes.min(5) } else { self.sleep_minutes }
     }
 
-    /// Whether unused tabs sleep (always in Potato PC mode).
+    /// Whether unused tabs sleep (always in Lite mode).
     pub fn sleeps_tabs(&self) -> bool {
-        self.sleep_tabs || self.potato
+        self.sleep_tabs || self.lite
     }
 
-    /// Whether the last closed tab stays loaded (never in Potato PC mode).
+    /// Whether the last closed tab stays loaded (never in Lite mode).
     pub fn keeps_closed_tab(&self) -> bool {
-        self.keep_closed_tab && !self.potato
+        self.keep_closed_tab && !self.lite
     }
 
-    /// The start page background actually drawn: plain in Potato PC mode.
+    /// The start page background actually drawn: plain in Lite mode.
     pub fn start_look(&self) -> StartBackground {
-        if self.potato { StartBackground::Plain } else { self.start_background }
+        if self.lite { StartBackground::Plain } else { self.start_background }
     }
 }
 
@@ -418,7 +419,7 @@ impl Default for Settings {
             domain_only_address: false,
             animations: true,
             // On by default on computers with two or fewer processor cores.
-            potato: std::thread::available_parallelism().map(|n| n.get() <= 2).unwrap_or(false),
+            lite: std::thread::available_parallelism().map(|n| n.get() <= 2).unwrap_or(false),
             start_show_search: true,
             clock_24h: true,
             start_tiles: 16,

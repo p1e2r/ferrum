@@ -89,7 +89,7 @@ impl Section {
 /// Every setting on the page.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Setting {
-    Potato,
+    Lite,
     Theme,
     Mode,
     Accent,
@@ -172,7 +172,7 @@ use Section as S;
 use Setting as T;
 
 const ITEMS: &[Item] = &[
-    item(S::Appearance, T::Potato, "Potato PC mode", "For slow or older computers. Turns off animations and fancy start-page backgrounds, puts unused tabs to sleep after 5 minutes, stops videos playing by themselves, and keeps the web engine's memory use low.", "potato slow old low end performance fast speed lag memory ram battery optimize optimise", false),
+    item(S::Appearance, T::Lite, "Lite mode", "For slow or older computers. Turns off animations and fancy start-page backgrounds, puts unused tabs to sleep after 5 minutes, stops videos playing by themselves, and keeps the web engine's memory use low.", "lite slow old low end performance fast speed lag memory ram battery optimize optimise", false),
     item(S::Appearance, T::Theme, "Theme", "Colours for the whole interface. Choosing a theme also sets its accent colour.", "colour color palette dark light skin look", true),
     item(S::Appearance, T::Mode, "Light or dark", "Works with every theme. System follows your computer's setting.", "dark mode light mode system appearance night", false),
     item(S::Appearance, T::Accent, "Accent colour", "Used for highlights, selected items and the loading bar.", "color highlight tint", true),
@@ -517,14 +517,14 @@ impl Browser {
             Setting::DomainOnly => {
                 toggle(ui, &mut s.domain_only_address, accent);
             },
-            Setting::Potato => {
-                if toggle(ui, &mut s.potato, accent).changed() {
-                    self.toast(if self.profile.settings.potato { "Potato PC mode on — new pages use less memory" } else { "Potato PC mode off" });
+            Setting::Lite => {
+                if toggle(ui, &mut s.lite, accent).changed() {
+                    self.toast(if self.profile.settings.lite { "Lite mode on — new pages use less memory" } else { "Lite mode off" });
                 }
             },
             Setting::Animations => {
-                if s.potato {
-                    ui.label(RichText::new("Off in Potato PC mode").weak());
+                if s.lite {
+                    ui.label(RichText::new("Off in Lite mode").weak());
                 } else {
                     toggle(ui, &mut s.animations, accent);
                 }
@@ -719,8 +719,8 @@ impl Browser {
                         ui.label("Darken");
                         ui.add(egui::Slider::new(&mut s.video_dim, 0..=80).suffix("%"));
                     });
-                    if s.potato {
-                        ui.label(RichText::new("Potato PC mode is on, so the new tab page shows a still colour instead.").weak());
+                    if s.lite {
+                        ui.label(RichText::new("Lite mode is on, so the new tab page shows a still colour instead.").weak());
                     }
                 });
                 if pick {
