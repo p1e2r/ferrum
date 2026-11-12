@@ -17,7 +17,8 @@ A fast, light desktop web browser with a native Rust interface.
 | Browsing | Tabs (favicons, middle-click close, right-click: reload, duplicate, close others / to the right), back/forward, reload, home, address bar that searches or navigates; automatic retry and HTTPS→HTTP fallback when a site won't connect |
 | Web compatibility | Everything the system engine supports: video, WebGL, modern JavaScript and CSS |
 | Media and PDFs | Videos, audio (MP3, AAC, WAV, FLAC…), pictures and PDFs open in the tab instead of downloading. Open files from your computer with Ctrl+O or by dropping them on the window. PDFs on Linux use a built-in viewer (pdf.js) |
-| Address bar | Suggestions from bookmarks and history (↑/↓ to pick), selects all on click, choice of 6 search engines |
+| Address bar | Suggestions from bookmarks and history (↑/↓ to pick), selects all on click, choice of 6 search engines. Type a sum (`12*(3+4)`, `2^10`, `15% of 80`, `sqrt(2)`) and the answer shows first; Enter copies it |
+| Profiles | Separate profiles, each with its own bookmarks, history, settings, cookies and sign-ins, in its own window. Link a profile to your Google account just by signing in to Google — no OAuth; Ferrum shows the account's name, email and picture |
 | Bookmarks | Star button / Ctrl+D, bookmarks bar, bookmarks panel with search, edit, remove (with undo) and reordering, right-click menus on the bar and start-page tiles |
 | Import from other browsers | Bookmarks and history from Chrome, Edge, Brave, Vivaldi, Opera, Arc, Firefox and Safari on the same computer |
 | History | Searchable history panel (fast even with thousands of entries), frequently-visited tiles, clear history |
@@ -30,8 +31,10 @@ A fast, light desktop web browser with a native Rust interface.
 | Find in page | Ctrl+F: highlights every match, "3 of 12", Enter / Shift+Enter, match case |
 | Printing | Ctrl+P: the system print dialog (printers, save as PDF) |
 | Settings page | `ferrum://settings` (Ctrl+, or ☰ → Settings) in its own tab: sections down the side, search, and every option below |
-| Themes | 10 complete colour themes (Ferrum light/dark, Midnight, Graphite, Forest, Arctic, Plum, Paper, Sky, Rose, High contrast) plus any accent colour |
+| Themes | 11 complete colour themes, each in light and dark (Ferrum, Midnight, Graphite, Forest, Arctic, Plum, Paper, Sky, Rose, Google — the look of Google's account pages — and High contrast) plus any accent colour |
+| macOS menu bar | File, Edit, View, History, Bookmarks, Profiles, Window and Help, with the usual ⌘ keys |
 | Customization | Interface size, density, corner rounding, tab shape (classic, pill, boxy, sharp), tab width and close buttons, tabs on top or down the side, which toolbar buttons show, light/dark with every theme, start page title / clock / tiles and background (a gradient of up to six colours, a solid colour, your own picture or a looping video), custom search engine, what new tabs open, download folder |
+| Energy saver | At 20% battery, when unplugged, or always: pages and Ferrum draw at 30 frames a second, unused tabs sleep after 2 minutes, videos in other tabs pause. A green leaf shows while it's on |
 | Lite mode | One switch for slow or older computers: no animations or fancy backgrounds, tabs sleep after 5 minutes, no autoplay, lower engine memory use. On by default on computers with two or fewer cores |
 | Privacy & web content | HTTPS-only mode, notification permission, custom user agent |
 | Theme | System / light / dark |
@@ -167,6 +170,10 @@ src/updates.rs    update check, one-click install, checksum check
 src/startview.rs  video new tab page and PDF viewer, from a private local server
 src/engine_ext.rs engine features wry doesn't expose (hard reload, cache tuning)
 src/browser_import.rs  import from Chrome, Edge, Firefox, Safari…
+src/calc.rs       the address-bar calculator
+src/power.rs      battery state, for energy saver
+src/profiles.rs   profiles and Google account linking
+src/macmenu.rs    the macOS menu bar
 src/theme.rs      colour themes
 src/profile.rs    settings, bookmarks, history, session (JSON)
 src/downloads.rs  download manager

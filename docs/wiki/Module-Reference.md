@@ -52,6 +52,13 @@ On Windows release builds `windows_subsystem = "windows"` hides the console wind
 
 `hard_reload` reloads without the cache (WebKit `reloadFromOrigin`, WebKitGTK `reload_bypass_cache`, WebView2 DevTools `Page.reload` with `ignoreCache`). `tune` sets WebKitGTK's cache model to *web browser* and enables its back/forward page cache and DNS prefetching; the other engines do this by default. Each engine keeps a persistent disk cache in the profile (WebKit on macOS in its own store). The last closed tab stays loaded, hidden, for two minutes (`Browser::park`), so reopening it is instant.
 
+## `calc.rs`, `power.rs`, `profiles.rs`, `macmenu.rs`
+
+- `calc::answer` turns address-bar text into an answer when it's a sum (a small recursive-descent parser: `+ - * / ^ %`, brackets, implicit multiplication, `pi`/`e`, functions such as `sqrt`, `sin`, `log`). The suggestions popup shows it first; Enter copies it.
+- `power::watch` reads the battery once a minute (`/sys/class/power_supply`, `pmset -g batt`, `GetSystemPowerStatus`). `EnergySaver::active` decides whether energy saver is on; `Settings::frugal` is true in Lite mode or while saving energy. The page script caps `requestAnimationFrame` at 30 a second, and Ferrum's own window draws at most 30 times a second.
+- `profiles` lists profiles (`profiles.json`), their folders (`Profiles/<id>/`), launches one in its own process (`--profile <id>`), and on macOS gives each its own WebKit data store. A Google account is linked by reading the account button on Google's pages (`parse_account_label`); no OAuth, nothing sent.
+- `macmenu::install` builds the macOS menu bar with muda; menu clicks are queued and run by `Browser::menu_command`. A key both a page and the menu handle runs once.
+
 ## `startview.rs` — video new tab page and PDF viewer
 
 A tiny HTTP server inside Ferrum, on 127.0.0.1 under a random secret path (the engines don't reliably play video from a custom URL scheme). It serves the new tab page with a video background (`html`, shown in one shared web view by `Browser::layout_start_view`), the video with byte ranges, and on Linux the pdf.js PDF viewer (`pdf`, `pdf-data`, `pdfjs/…`). `shown_url` makes a PDF in the viewer show its own address.
