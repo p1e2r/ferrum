@@ -318,6 +318,13 @@ pub struct Browser {
     /// Waiting for the user to sign in to Google, to link the account.
     pub(crate) google_linking: bool,
     pub(crate) profile_menu_open: bool,
+    /// The macOS menu bar (kept alive here).
+    #[cfg(target_os = "macos")]
+    menu_bar: Option<muda::Menu>,
+    /// When a key command last ran from a page or the window, and from the
+    /// menu bar: the same key can reach both, and should run once.
+    last_key_command: Instant,
+    last_menu_command: Instant,
     /// The linked Google account's picture: (address, texture), and one being downloaded.
     pub(crate) avatar: Option<(String, egui::TextureHandle)>,
     avatar_pending: Shared<Option<(String, egui::ColorImage)>>,
@@ -481,6 +488,10 @@ impl Browser {
             profile_id,
             google_linking: false,
             profile_menu_open: false,
+            #[cfg(target_os = "macos")]
+            menu_bar: None,
+            last_key_command: Instant::now() - Duration::from_secs(10),
+            last_menu_command: Instant::now() - Duration::from_secs(10),
             avatar: None,
             avatar_pending: Default::default(),
             power: {
@@ -542,6 +553,7 @@ impl Browser {
         }
         browser.downloads.dir = browser.download_dir();
         browser.fetch_avatar();
+        browser.install_menu_bar();
         crate::timing("tabs opened");
         browser.maybe_check_for_updates();
         browser
@@ -833,6 +845,113 @@ impl Browser {
         let _ = webview.set_visible(false);
         let _ = webview.evaluate_script("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})");
         self.parked = Some((tab, Instant::now()));
+    }
+
+    // ----- the macOS menu bar (macmenu.rs) -----
+
+    #[cfg(target_os = "macos")]
+    fn install_menu_bar(&mut self) {
+        let proxy = self.proxy.clone();
+        let others: Vec<(String, String)> =
+            crate::profiles::list().into_iter().filter(|p| p.id != self.profile_id).map(|p| (p.id.clone(), p.display_name())).collect();
+        self.menu_bar = crate::macmenu::install(
+            move || {
+                let _ = proxy.send_event(WakeUp);
+            },
+            &others,
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn install_menu_bar(&mut self) {}
+
+    /// A command from the menu bar (or anything else that names commands).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn menu_command(&mut self, id: &str) {
+        // The page or window may have just handled this key itself.
+        let keyed = !matches!(id, "check-updates" | "clear-data" | "import" | "add-profile" | "manage-profiles" | "github") && !id.starts_with("profile:");
+        if keyed && self.last_key_command.elapsed() < Duration::from_millis(250) {
+            return;
+        }
+        self.last_menu_command = Instant::now();
+        match id {
+            "check-updates" => {
+                self.settings_section = crate::settings_page::Section::About;
+                self.open_settings();
+                self.check_for_updates();
+            },
+            "settings" => self.open_settings(),
+            "new-tab" => self.new_tab(),
+            "new-private" => self.open_private_window(),
+            "reopen-tab" => self.reopen_closed_tab(),
+            "open-file" => self.open_file(),
+            "open-location" => self.focus_location = true,
+            "close-tab" => self.close_tab(self.active),
+            "print" => self.print(),
+            "find" => self.open_find(),
+            "find-next" => {
+                self.open_find();
+                self.find_step(1);
+            },
+            "find-previous" => {
+                self.open_find();
+                self.find_step(-1);
+            },
+            "reload" => self.reload(),
+            "hard-reload" => self.hard_reload(),
+            "stop" => self.stop(),
+            "zoom-in" => self.zoom_step(true),
+            "zoom-out" => self.zoom_step(false),
+            "zoom-reset" => self.set_zoom(1.0),
+            "reader" => self.toggle_reader(),
+            "bookmarks-bar" => {
+                self.profile.settings.show_bookmarks_bar = !self.profile.settings.show_bookmarks_bar;
+                self.profile.mark_dirty();
+            },
+            "fullscreen" => self.toggle_window_fullscreen(),
+            "devtools" => self.toggle_devtools(),
+            "view-source" => self.view_source(),
+            "back" => self.go_back(),
+            "forward" => self.go_forward(),
+            "home" => self.go_home(),
+            "history" => self.toggle_panel(SidePanel::History),
+            "clear-data" => self.clear_site_data(),
+            "bookmark" => self.toggle_bookmark(),
+            "bookmarks" => self.toggle_panel(SidePanel::Bookmarks),
+            "import" => {
+                self.settings_section = crate::settings_page::Section::Advanced;
+                self.settings_query = "import".into();
+                self.open_settings();
+            },
+            "add-profile" => {
+                let p = crate::profiles::create();
+                crate::profiles::launch(&p.id);
+            },
+            "manage-profiles" => {
+                self.settings_section = crate::settings_page::Section::Profiles;
+                self.open_settings();
+            },
+            "next-tab" | "previous-tab" => {
+                let n = self.tabs.len();
+                if n > 0 {
+                    let next = if id == "next-tab" { (self.active + 1) % n } else { (self.active + n - 1) % n };
+                    self.activate(next);
+                }
+            },
+            "downloads" => self.toggle_panel(SidePanel::Downloads),
+            "shortcuts" => self.open_internal(InternalPage::Shortcuts),
+            "github" => {
+                if let Ok(u) = Url::parse("https://github.com/p1e2r/ferrum") {
+                    self.open_tab(Some(u));
+                }
+            },
+            other => {
+                if let Some(profile) = other.strip_prefix("profile:") {
+                    crate::profiles::launch(profile);
+                }
+            },
+        }
+        self.window.request_redraw();
     }
 
     // ----- profiles (profiles.rs) -----
@@ -1191,6 +1310,10 @@ impl Browser {
 
     /// Handle what the engine and background threads reported.
     pub fn pump(&mut self) {
+        #[cfg(target_os = "macos")]
+        for command in crate::macmenu::take() {
+            self.menu_command(&command);
+        }
         self.finish_update();
         self.update_energy_saver();
         self.expire_parked();
@@ -1601,6 +1724,13 @@ impl Browser {
 
     pub(crate) fn handle_shortcut(&mut self, s: &Shortcut) -> bool {
         let cmd = if cfg!(target_os = "macos") { s.meta } else { s.ctrl };
+        // macOS: the menu bar may have just run this key's command.
+        if cfg!(target_os = "macos") && (cmd || s.ctrl) {
+            if self.last_menu_command.elapsed() < Duration::from_millis(250) {
+                return true;
+            }
+            self.last_key_command = Instant::now();
+        }
         let shift = s.shift;
         let key = if s.key.chars().count() == 1 { s.key.to_lowercase() } else { s.key.clone() };
         match key.as_str() {

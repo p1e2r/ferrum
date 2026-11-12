@@ -25,6 +25,8 @@ mod find;
 mod gl;
 mod icons;
 mod location;
+#[cfg(target_os = "macos")]
+mod macmenu;
 mod notify;
 mod overlay;
 mod overlay_ui;

@@ -316,6 +316,18 @@ impl Browser {
             },
             _ => {},
         }
+        if !self.profile.is_private() && row(ui, "Profiles…", "") {
+            self.profile_menu_open = true;
+            close = true;
+        }
+        let saving = self.profile.settings.saving_energy;
+        if row(ui, if saving { "Turn off energy saver" } else { "Turn on energy saver" }, "") {
+            use crate::profile::EnergySaver;
+            let s = &mut self.profile.settings;
+            s.energy_saver = if saving { EnergySaver::Off } else { EnergySaver::Always };
+            self.profile.mark_dirty();
+            close = true;
+        }
         if row(ui, "Settings", "Ctrl+,") {
             self.open_settings();
             close = true;

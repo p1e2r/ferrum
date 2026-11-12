@@ -1,6 +1,6 @@
 [package]
 name = "ferrum"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "MIT"
 description = "A fast web browser with a native Rust interface, using the system web engine (WebKit, WebView2, WebKitGTK)."
@@ -47,6 +47,8 @@ webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 x11-dl = "2.21"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The macOS menu bar (File, Edit, View, …).
+muda = { version = "0.21", default-features = false }
 objc2 = "0.6.4"
 block2 = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSError"] }
