@@ -61,8 +61,9 @@ impl Browser {
         let url_rect = memory_rect("url_rect");
         let url_focused = ctx.memory(|m| m.data.get_temp::<bool>(Id::new("url_focused"))).unwrap_or(false);
         if self.editing && self.profile.settings.show_suggestions && (url_focused || self.overlays.pointer_inside) {
+            let calc = crate::calc::answer(&self.location).is_some();
             let n = self.profile.suggestions(&self.location, 7).len();
-            if n > 0 {
+            if n > 0 || calc {
                 ctx.input(|i| {
                     if i.key_pressed(EKey::ArrowDown) {
                         self.suggestion_index = Some(self.suggestion_index.map_or(0, |s| (s + 1).min(n - 1)));
@@ -71,7 +72,8 @@ impl Browser {
                         self.suggestion_index = self.suggestion_index.and_then(|s| s.checked_sub(1));
                     }
                 });
-                let r = egui::Rect::from_min_size(url_rect.left_bottom() + vec2(0.0, 4.0), vec2(url_rect.width(), n as f32 * 36.0 + 24.0));
+                let rows = n as f32 * 36.0 + if calc { 52.0 } else { 0.0 };
+                let r = egui::Rect::from_min_size(url_rect.left_bottom() + vec2(0.0, 4.0), vec2(url_rect.width(), rows + 24.0));
                 requests.push((OverlayKind::Suggestions, fit(r)));
             }
         }
@@ -322,6 +324,30 @@ impl Browser {
     }
 
     fn suggestions_contents(&mut self, ui: &mut Ui) {
+        // A sum: its answer first (Enter or a click copies it).
+        if let Some(answer) = crate::calc::answer(&self.location) {
+            let resp = ui
+                .horizontal(|ui| {
+                    ui.set_min_height(40.0);
+                    ui.set_width(ui.available_width());
+                    let (r, _) = ui.allocate_exact_size(vec2(26.0, 26.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 13.0, self.accent().gamma_multiply(0.25));
+                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "=", egui::FontId::proportional(17.0), self.accent());
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(&answer).size(20.0).strong());
+                        ui.label(RichText::new(format!("{} — Enter to copy", self.location.trim().trim_end_matches('='))).size(11.0).weak());
+                    });
+                })
+                .response;
+            let resp = ui.interact(resp.rect, Id::new("calc"), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.hovered() {
+                ui.painter().rect_filled(resp.rect.expand(2.0), ui.visuals().widgets.hovered.corner_radius, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
+            }
+            if resp.clicked() {
+                self.copy_answer(ui.ctx(), &answer);
+            }
+            ui.add_space(2.0);
+        }
         let suggestions = self.profile.suggestions(&self.location, 7);
         let mut chosen = None;
         for (i, (title, url, bookmark)) in suggestions.iter().enumerate() {
@@ -353,6 +379,13 @@ impl Browser {
         if let Some(url) = chosen {
             self.navigate_input(&url);
         }
+    }
+
+    /// Put a calculator answer on the clipboard.
+    pub(crate) fn copy_answer(&mut self, ctx: &egui::Context, answer: &str) {
+        // Without thousands separators, so it pastes as a number.
+        ctx.copy_text(answer.replace(',', ""));
+        self.toast(format!("= {answer}  ·  copied"));
     }
 
     fn site_info_contents(&mut self, ui: &mut Ui) {

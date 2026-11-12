@@ -190,6 +190,11 @@ pub struct Settings {
     /// Lite mode: everything tuned for slow, low-memory computers.
     #[serde(alias = "potato")]
     pub lite: bool,
+    /// When energy saver turns on.
+    pub energy_saver: EnergySaver,
+    /// Energy saver is on right now (worked out from the battery, not saved).
+    #[serde(skip)]
+    pub saving_energy: bool,
 
     // Start page
     pub start_show_search: bool,
@@ -270,29 +275,64 @@ impl Default for GradientSource {
 }
 
 impl Settings {
-    /// Animations, unless Lite mode is on.
+    /// Lite mode, or energy saver while it's saving: use as little as possible.
+    pub fn frugal(&self) -> bool {
+        self.lite || self.saving_energy
+    }
+
+    /// Animations, unless Lite mode or energy saver is on.
     pub fn animate(&self) -> bool {
-        self.animations && !self.lite
+        self.animations && !self.frugal()
     }
 
-    /// Minutes before an unused tab is put to sleep (sooner in Lite mode).
+    /// Minutes before an unused tab is put to sleep: 2 with energy saver on,
+    /// 5 in Lite mode, otherwise the setting.
     pub fn sleep_after_minutes(&self) -> u32 {
-        if self.lite { self.sleep_minutes.min(5) } else { self.sleep_minutes }
+        if self.saving_energy {
+            self.sleep_minutes.min(2)
+        } else if self.lite {
+            self.sleep_minutes.min(5)
+        } else {
+            self.sleep_minutes
+        }
     }
 
-    /// Whether unused tabs sleep (always in Lite mode).
+    /// Whether unused tabs sleep (always in Lite mode and energy saver).
     pub fn sleeps_tabs(&self) -> bool {
-        self.sleep_tabs || self.lite
+        self.sleep_tabs || self.frugal()
     }
 
-    /// Whether the last closed tab stays loaded (never in Lite mode).
+    /// Whether the last closed tab stays loaded (not in Lite mode or energy saver).
     pub fn keeps_closed_tab(&self) -> bool {
-        self.keep_closed_tab && !self.lite
+        self.keep_closed_tab && !self.frugal()
     }
 
-    /// The start page background actually drawn: plain in Lite mode.
+    /// The start page background actually drawn: plain in Lite mode and energy saver.
     pub fn start_look(&self) -> StartBackground {
-        if self.lite { StartBackground::Plain } else { self.start_background }
+        if self.frugal() { StartBackground::Plain } else { self.start_background }
+    }
+}
+
+/// When energy saver turns on (like Chrome's).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnergySaver {
+    Off,
+    /// On battery at 20% or less.
+    #[default]
+    LowBattery,
+    /// Whenever the computer is unplugged.
+    Unplugged,
+    Always,
+}
+
+impl EnergySaver {
+    pub fn active(self, power: crate::power::Power) -> bool {
+        match self {
+            EnergySaver::Off => false,
+            EnergySaver::LowBattery => power.on_battery && power.percent.is_some_and(|p| p <= 20),
+            EnergySaver::Unplugged => power.on_battery,
+            EnergySaver::Always => true,
+        }
     }
 }
 
@@ -419,6 +459,8 @@ impl Default for Settings {
             domain_only_address: false,
             animations: true,
             // On by default on computers with two or fewer processor cores.
+            energy_saver: EnergySaver::LowBattery,
+            saving_energy: false,
             lite: std::thread::available_parallelism().map(|n| n.get() <= 2).unwrap_or(false),
             start_show_search: true,
             clock_24h: true,

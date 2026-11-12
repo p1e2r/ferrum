@@ -23,7 +23,7 @@ const ENGINE_NAME: &str = if cfg!(target_os = "macos") {
 };
 
 use crate::browser::{APP_NAME, Browser};
-use crate::profile::{CloseButtons, TabShape, DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, TabWidth, ThemeChoice};
+use crate::profile::{CloseButtons, EnergySaver, TabShape, DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, TabWidth, ThemeChoice};
 use crate::theme::{ThemePreset, mix};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,6 +90,7 @@ impl Section {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Setting {
     Lite,
+    EnergySaver,
     Theme,
     Mode,
     Accent,
@@ -173,6 +174,7 @@ use Setting as T;
 
 const ITEMS: &[Item] = &[
     item(S::Appearance, T::Lite, "Lite mode", "For slow or older computers. Turns off animations and fancy start-page backgrounds, puts unused tabs to sleep after 5 minutes, stops videos playing by themselves, and keeps the web engine's memory use low.", "lite slow old low end performance fast speed lag memory ram battery optimize optimise", false),
+    item(S::Appearance, T::EnergySaver, "Energy saver", "Saves battery: pages and Ferrum draw at 30 frames a second, unused tabs sleep after 2 minutes, videos in other tabs pause, and no animations. A green leaf shows in the toolbar while it's on.", "energy saver battery power save fps frame rate 30 sleep laptop unplugged", false),
     item(S::Appearance, T::Theme, "Theme", "Colours for the whole interface. Choosing a theme also sets its accent colour.", "colour color palette dark light skin look", true),
     item(S::Appearance, T::Mode, "Light or dark", "Works with every theme. System follows your computer's setting.", "dark mode light mode system appearance night", false),
     item(S::Appearance, T::Accent, "Accent colour", "Used for highlights, selected items and the loading bar.", "color highlight tint", true),
@@ -521,6 +523,18 @@ impl Browser {
                 if toggle(ui, &mut s.lite, accent).changed() {
                     self.toast(if self.profile.settings.lite { "Lite mode on — new pages use less memory" } else { "Lite mode off" });
                 }
+            },
+            Setting::EnergySaver => {
+                ui.vertical(|ui| {
+                    segmented(
+                        ui,
+                        &mut s.energy_saver,
+                        &[(EnergySaver::Always, "Always"), (EnergySaver::Unplugged, "When unplugged"), (EnergySaver::LowBattery, "At 20% battery"), (EnergySaver::Off, "Off")],
+                    );
+                    if s.saving_energy {
+                        ui.label(RichText::new("On now").color(Color32::from_rgb(52, 168, 83)));
+                    }
+                });
             },
             Setting::Animations => {
                 if s.lite {
@@ -1027,6 +1041,11 @@ impl Browser {
                     let s = &mut self.profile.settings;
                     s.theme_preset = preset;
                     s.accent = accent_shown.unwrap_or(DEFAULT_ACCENT);
+                    // Google's look is pill-shaped all over.
+                    if preset == ThemePreset::Google {
+                        s.tab_shape = crate::profile::TabShape::Pill;
+                        s.roundness = s.roundness.max(16);
+                    }
                 }
             }
         });

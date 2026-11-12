@@ -23,6 +23,8 @@ pub enum ThemePreset {
     Paper,
     Sky,
     Rose,
+    /// The look of Google's account pages: white and light grey, Google blue, pills.
+    Google,
     HighContrast,
 }
 
@@ -43,7 +45,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 10] = [
+    pub const ALL: [ThemePreset; 11] = [
         ThemePreset::Ferrum,
         ThemePreset::Midnight,
         ThemePreset::Graphite,
@@ -53,6 +55,7 @@ impl ThemePreset {
         ThemePreset::Paper,
         ThemePreset::Sky,
         ThemePreset::Rose,
+        ThemePreset::Google,
         ThemePreset::HighContrast,
     ];
 
@@ -67,6 +70,7 @@ impl ThemePreset {
             ThemePreset::Paper => "Paper",
             ThemePreset::Sky => "Sky",
             ThemePreset::Rose => "Rose",
+            ThemePreset::Google => "Google",
             ThemePreset::HighContrast => "High contrast",
         }
     }
@@ -96,6 +100,8 @@ impl ThemePreset {
             ThemePreset::Paper => p(rgb(44, 40, 34), rgb(33, 30, 25), rgb(238, 230, 214), [222, 130, 70]),
             ThemePreset::Sky => p(rgb(24, 34, 48), rgb(16, 24, 36), rgb(222, 234, 248), [90, 160, 255]),
             ThemePreset::Rose => p(rgb(46, 28, 34), rgb(34, 20, 25), rgb(248, 228, 233), [240, 110, 150]),
+            // Google's dark surfaces and light blue.
+            ThemePreset::Google => p(rgb(32, 33, 36), rgb(48, 49, 52), rgb(232, 234, 237), [138, 180, 248]),
         }
     }
 
@@ -111,6 +117,8 @@ impl ThemePreset {
             ThemePreset::Paper => p(false, rgb(239, 233, 220), rgb(252, 250, 244), rgb(45, 42, 36), [196, 98, 45]),
             ThemePreset::Sky => p(false, rgb(227, 236, 247), rgb(255, 255, 255), rgb(29, 42, 58), [37, 110, 220]),
             ThemePreset::Rose => p(false, rgb(245, 227, 231), rgb(255, 250, 251), rgb(58, 34, 40), [214, 70, 110]),
+            // Google's account pages: light grey around white, Google blue.
+            ThemePreset::Google => p(false, rgb(241, 243, 244), rgb(255, 255, 255), rgb(32, 33, 36), [26, 115, 232]),
             ThemePreset::HighContrast => p(true, rgb(0, 0, 0), rgb(0, 0, 0), rgb(255, 255, 255), [255, 214, 0]),
         }
     }

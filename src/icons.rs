@@ -32,6 +32,7 @@ pub enum Icon {
     Reader,
     Code,
     Trash,
+    Leaf,
     Edit,
     Minimize,
     Maximize,
@@ -345,6 +346,25 @@ pub fn paint_icon(ui: &Ui, icon: Icon, r: Rect, color: Color32) {
             p.line_segment([pos2(r.right() - w * 0.3, r.top() + h * 0.15), pos2(r.right(), c.y)], s);
             p.line_segment([pos2(r.right(), c.y), pos2(r.right() - w * 0.3, r.bottom() - h * 0.15)], s);
             p.line_segment([pos2(c.x + w * 0.1, r.top()), pos2(c.x - w * 0.1, r.bottom())], s);
+        },
+        Icon::Leaf => {
+            // A leaf: two arcs meeting at the tips, and a vein down the middle.
+            let a = pos2(r.left() + w * 0.1, r.bottom() - h * 0.1);
+            let b = pos2(r.right() - w * 0.05, r.top() + h * 0.05);
+            let ctrl1 = pos2(r.left() + w * 0.05, r.top() + h * 0.15);
+            let ctrl2 = pos2(r.right() - w * 0.1, r.bottom() - h * 0.25);
+            let arc = |c: egui::Pos2| {
+                (0..=12)
+                    .map(|i| {
+                        let t = i as f32 / 12.0;
+                        let u = 1.0 - t;
+                        pos2(u * u * a.x + 2.0 * u * t * c.x + t * t * b.x, u * u * a.y + 2.0 * u * t * c.y + t * t * b.y)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            p.add(egui::Shape::line(arc(ctrl1), s));
+            p.add(egui::Shape::line(arc(ctrl2), s));
+            p.line_segment([pos2(r.left(), r.bottom()), c + vec2(w * 0.12, -h * 0.12)], s);
         },
         Icon::Trash => {
             // Lid, handle, and a can with two ribs.

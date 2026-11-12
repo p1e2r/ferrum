@@ -310,6 +310,10 @@ pub struct Browser {
     start_shown: bool,
     /// Set while drawing: the active tab is a new tab page with a video.
     pub(crate) start_video_wanted: bool,
+    /// The battery, for energy saver.
+    power: Arc<Mutex<crate::power::Power>>,
+    /// When the window was last drawn (energy saver caps it at 30 a second).
+    last_frame: Instant,
     /// A web notification: (site, title, body, since).
     pub(crate) notification: Option<(String, String, String, Instant)>,
     /// Sites waiting for an answer to "show notifications?".
@@ -463,6 +467,13 @@ impl Browser {
             start_bounds: (0, 0, 0, 0),
             start_shown: false,
             start_video_wanted: false,
+            last_frame: Instant::now(),
+            power: {
+                let p = proxy.clone();
+                crate::power::watch(Arc::new(move || {
+                    let _ = p.send_event(WakeUp);
+                }))
+            },
             notification: None,
             permission_asks: Vec::new(),
             remember_permission: true,
@@ -533,7 +544,7 @@ impl Browser {
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (s.block_trackers, &s.blocker_exceptions, self.blocker.domain_count(), &s.site_permissions, s.allow_notifications, self.force_dark()).hash(&mut h);
+            (s.block_trackers, &s.blocker_exceptions, self.blocker.domain_count(), &s.site_permissions, s.allow_notifications, self.force_dark(), s.saving_energy).hash(&mut h);
             h.finish()
         };
         if self.page_script.0 != key || self.page_script.1.is_empty() {
@@ -549,6 +560,7 @@ impl Browser {
                 &notifications,
                 s.allow_notifications,
                 self.force_dark(),
+                s.saving_energy,
             );
             self.page_script = (key, script);
         }
@@ -576,7 +588,7 @@ impl Browser {
             .with_hotkeys_zoom(true)
             .with_back_forward_navigation_gestures(true)
             // Lite mode: videos wait for a click instead of playing by themselves.
-            .with_autoplay(!self.profile.settings.lite)
+            .with_autoplay(!self.profile.settings.frugal())
             .with_incognito(private)
             .with_ipc_handler(move |request| q1.push(Event::Ipc(tab_id, request.into_body())))
             .with_document_title_changed_handler(move |title| q2.push(Event::Title(tab_id, title)))
@@ -628,7 +640,7 @@ impl Browser {
         match builder.build_as_child(&*self.window) {
             Ok(webview) => {
                 crate::adblock::attach(&webview);
-                crate::engine_ext::tune(&webview, self.profile.settings.lite);
+                crate::engine_ext::tune(&webview, self.profile.settings.frugal());
                 #[cfg(target_os = "windows")]
                 if let Some(dark) = self.page_dark {
                     use wry::WebViewExtWindows;
@@ -800,6 +812,27 @@ impl Browser {
         let _ = webview.set_visible(false);
         let _ = webview.evaluate_script("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})");
         self.parked = Some((tab, Instant::now()));
+    }
+
+    /// Turn energy saver on or off as the battery changes.
+    fn update_energy_saver(&mut self) {
+        let power = self.power.lock().map(|p| *p).unwrap_or_default();
+        let on = self.profile.settings.energy_saver.active(power);
+        if on == self.profile.settings.saving_energy {
+            return;
+        }
+        self.profile.settings.saving_energy = on;
+        log::info!("Energy saver {}", if on { "on" } else { "off" });
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let Some(w) = &tab.webview else { continue };
+            // Page animations at 30 frames a second.
+            let _ = w.evaluate_script(&format!("window.__ferrumFps30 && window.__ferrumFps30({on})"));
+            // Videos in pages that aren't shown are paused.
+            if on && i != self.active {
+                let _ = w.evaluate_script("document.querySelectorAll('video').forEach(function(v){v.pause()})");
+            }
+        }
+        self.window.request_redraw();
     }
 
     /// Let go of a parked tab after two minutes.
@@ -1061,6 +1094,7 @@ impl Browser {
     /// Handle what the engine and background threads reported.
     pub fn pump(&mut self) {
         self.finish_update();
+        self.update_energy_saver();
         self.expire_parked();
         let events: Vec<Event> = std::mem::take(&mut *self.events.borrow_mut());
         for event in events {
@@ -1353,6 +1387,17 @@ impl Browser {
                 self.window.request_redraw();
             },
             WindowEvent::RedrawRequested => {
+                // Energy saver: Ferrum's own interface draws at most 30 times a second.
+                if self.profile.settings.saving_energy {
+                    let next = self.last_frame + Duration::from_millis(33);
+                    if Instant::now() < next {
+                        if let Ok(mut at) = self.repaint_at.lock() {
+                            *at = Some(at.map_or(next, |a| a.min(next)));
+                        }
+                        return true;
+                    }
+                }
+                self.last_frame = Instant::now();
                 self.redraw(event_loop);
                 if self.wants_quit() {
                     self.save_session();
@@ -2013,7 +2058,7 @@ impl Browser {
         );
         let page_visible = r.is_positive();
         self.layout_start_view(bounds, page_visible);
-        let lite = self.profile.settings.lite;
+        let lite = self.profile.settings.frugal();
         // The active tab's page was hidden (reader mode, an internal page):
         // the keyboard goes back to Ferrum's window.
         let mut active_hidden = false;
@@ -2367,7 +2412,7 @@ impl Browser {
     pub fn next_wake(&mut self) -> Option<Instant> {
         self.save_if_due();
         self.sleep_idle_tabs();
-        let sleep_check = (self.profile.settings.sleep_tabs && self.tabs.len() > 1).then(|| self.last_sleep_check + SLEEP_CHECK);
+        let sleep_check = (self.profile.settings.sleeps_tabs() && self.tabs.len() > 1).then(|| self.last_sleep_check + SLEEP_CHECK);
         // Linux: WebKitGTK runs on GTK's main loop, which main.rs pumps each time the loop wakes.
         let gtk = cfg!(target_os = "linux").then(|| Instant::now() + Duration::from_millis(16));
         [self.next_repaint(), self.profile.flush_at(), sleep_check, gtk].into_iter().flatten().min()

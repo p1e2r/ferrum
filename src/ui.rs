@@ -27,14 +27,14 @@ pub fn accent(settings: &Settings) -> Color32 {
 pub fn style_key(s: &Settings) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness, s.animate(), s.lite).hash(&mut h);
+    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness, s.animate(), s.frugal()).hash(&mut h);
     h.finish().max(1)
 }
 
 /// Apply theme, accent colour, size, density and rounding to egui.
 pub fn style(ctx: &egui::Context, settings: &Settings) {
     // Lite mode: simpler edges are cheaper to draw.
-    ctx.tessellation_options_mut(|t| t.feathering = !settings.lite);
+    ctx.tessellation_options_mut(|t| t.feathering = !settings.frugal());
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;
         o.fallback_theme = egui::Theme::Light;
@@ -878,6 +878,20 @@ impl Browser {
                         if dl.clicked() {
                             self.toggle_panel(SidePanel::Downloads);
                         }
+                        // Energy saver is on: a green leaf, like Chrome's.
+                        if self.profile.settings.saving_energy {
+                            let (rect, leaf) = ui.allocate_exact_size(Vec2::splat(button), Sense::click());
+                            if leaf.hovered() {
+                                ui.painter().rect_filled(rect, ui.visuals().widgets.hovered.corner_radius, ui.visuals().widgets.hovered.weak_bg_fill);
+                            }
+                            crate::icons::paint_icon(ui, Icon::Leaf, rect.shrink(button * 0.27), Color32::from_rgb(52, 168, 83));
+                            let leaf = leaf.on_hover_text("Energy saver is on: pages and Ferrum draw at 30 frames a second and unused tabs sleep after 2 minutes. Click for settings.");
+                            if leaf.clicked() {
+                                self.settings_section = crate::settings_page::Section::Appearance;
+                                self.settings_query = "energy".into();
+                                self.open_settings();
+                            }
+                        }
                         if url.is_some() && show_star {
                             let star = if bookmarked { Icon::StarFilled } else { Icon::Star };
                             if icon_button(ui, star, button, true, "Bookmark this page (Ctrl+D)").clicked() {
@@ -974,10 +988,17 @@ impl Browser {
                             if response.lost_focus() {
                                 if ui.input(|i| i.key_pressed(EKey::Enter)) {
                                     let suggestions = self.profile.suggestions(&self.location, 7);
+                                    let answer = crate::calc::answer(&self.location);
                                     match self.suggestion_index.and_then(|i| suggestions.get(i)) {
                                         Some((_, url, _)) => {
                                             let url = url.clone();
                                             self.navigate_input(&url);
+                                        },
+                                        // A sum: copy the answer instead of searching for it.
+                                        None if answer.is_some() => {
+                                            let answer = answer.unwrap_or_default();
+                                            self.copy_answer(ui.ctx(), &answer);
+                                            response.request_focus();
                                         },
                                         None => {
                                             let input = self.location.clone();

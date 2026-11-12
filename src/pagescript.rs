@@ -13,7 +13,7 @@
 /// Keys Ferrum handles even while a page has focus, with Ctrl (⌘ on macOS).
 const MOD_KEYS: &str = "tTwWnNlLrRfFgGdDbBhHjJoOpPuU,=+-0123456789/[]mMiIsS";
 
-pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String], notifications: &[(String, bool)], allow_notifications: bool, force_dark: bool) -> String {
+pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String], notifications: &[(String, bool)], allow_notifications: bool, force_dark: bool, fps30: bool) -> String {
     let notifications = serde_json::to_string(notifications).unwrap_or_else(|_| "[]".into());
     let list = serde_json::to_string(blocklist).unwrap_or_else(|_| "[]".into());
     let exceptions = serde_json::to_string(exceptions).unwrap_or_else(|_| "[]".into());
@@ -24,6 +24,31 @@ pub fn script(block_trackers: bool, blocklist: &[String], exceptions: &[String],
   window.__ferrum = true;
   const post = (m) => {{ try {{ window.ipc.postMessage(JSON.stringify(m)); }} catch (e) {{}} }};
   const top = window === window.top;
+
+  // ----- energy saver: animations at 30 frames a second -----
+  // requestAnimationFrame callbacks run at most every other frame; callbacks
+  // for the same frame still all run together.
+  {{
+    let cap = {fps30};
+    const raf = window.requestAnimationFrame.bind(window);
+    const caf = window.cancelAnimationFrame.bind(window);
+    const ids = new Map();
+    let next = 1, last = -1e9;
+    window.requestAnimationFrame = function (cb) {{
+      if (!cap) return raf(cb);
+      const id = -(next++);
+      const tick = (t) => {{
+        if (t - last >= 32 || t === last) {{ last = t; ids.delete(id); cb(t); }}
+        else ids.set(id, raf(tick));
+      }};
+      ids.set(id, raf(tick));
+      return id;
+    }};
+    window.cancelAnimationFrame = function (id) {{
+      if (ids.has(id)) {{ caf(ids.get(id)); ids.delete(id); }} else caf(id);
+    }};
+    window.__ferrumFps30 = (on) => {{ cap = on; }};
+  }}
 
   // ----- dark mode for sites without one -----
   // When it's on and the page is still light, invert it (and invert images
