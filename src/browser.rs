@@ -52,6 +52,10 @@ enum Event {
     NewTab(String),
     Download(u64, String),
     Ipc(u64, String),
+    /// Load this address in the tab instead (e.g. a PDF in the built-in viewer).
+    Redirect(u64, String),
+    /// Files dropped on a page: open each in a tab.
+    OpenFiles(Vec<std::path::PathBuf>),
 }
 
 #[derive(Clone)]
@@ -192,7 +196,12 @@ impl Tab {
         if !self.title.trim().is_empty() {
             return self.title.clone();
         }
-        self.page_url.as_ref().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| "Loading…".into())
+        // Pictures, video and audio have no title of their own: use the file name.
+        let url = self.url();
+        if let Some(name) = url.as_ref().and_then(|u| u.path_segments()?.next_back().filter(|n| n.contains('.')).map(str::to_owned)) {
+            return crate::downloads::percent_decode(&name);
+        }
+        url.as_ref().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| "Loading…".into())
     }
 
     pub fn url(&self) -> Option<Url> {
@@ -205,7 +214,7 @@ impl Tab {
         if let Some((url, _)) = &self.pending {
             return Some(url.clone());
         }
-        self.webview.as_ref().and(self.page_url.clone())
+        self.webview.as_ref().and(self.page_url.clone()).map(|u| crate::startview::shown_url(&u).unwrap_or(u))
     }
 
     pub fn loading(&self) -> bool {
@@ -287,6 +296,15 @@ pub struct Browser {
     pub(crate) bookmark_filter: String,
     /// Which start-page gradient colour the settings are editing.
     pub(crate) gradient_selected: usize,
+    /// The new tab page with a video background (one shared view; see startview.rs).
+    start_view: Option<WebView>,
+    start_served: crate::startview::Shared,
+    start_server: Option<crate::startview::Server>,
+    start_data: Option<crate::startview::StartData>,
+    start_bounds: (i32, i32, u32, u32),
+    start_shown: bool,
+    /// Set while drawing: the active tab is a new tab page with a video.
+    pub(crate) start_video_wanted: bool,
     /// A web notification: (site, title, body, since).
     pub(crate) notification: Option<(String, String, String, Instant)>,
     /// Sites waiting for an answer to "show notifications?".
@@ -434,6 +452,13 @@ impl Browser {
             import_choice: (true, true),
             bookmark_filter: String::new(),
             gradient_selected: 0,
+            start_view: None,
+            start_served: Default::default(),
+            start_server: None,
+            start_data: None,
+            start_bounds: (0, 0, 0, 0),
+            start_shown: false,
+            start_video_wanted: false,
             notification: None,
             permission_asks: Vec::new(),
             remember_permission: true,
@@ -529,6 +554,9 @@ impl Browser {
     /// Create the engine's view for a tab.
     pub(crate) fn create_webview(&mut self, tab_id: u64, url: &Url) -> Option<WebView> {
         let script = self.page_script();
+        // Linux: WebKitGTK can't show PDFs, so they open in Ferrum's viewer.
+        let pdf_base = if cfg!(target_os = "linux") { self.local_server().map(|s| s.base().to_string()) } else { None };
+        let q6 = Queue { events: self.events.clone(), window: self.window.clone() };
         let queue = Queue { events: self.events.clone(), window: self.window.clone() };
         let https_only = self.profile.settings.https_only;
         let user_agent = self.profile.settings.user_agent.trim().to_string();
@@ -543,7 +571,8 @@ impl Browser {
             .with_clipboard(true)
             .with_hotkeys_zoom(true)
             .with_back_forward_navigation_gestures(true)
-            .with_autoplay(true)
+            // Potato PC mode: videos wait for a click instead of playing by themselves.
+            .with_autoplay(!self.profile.settings.potato)
             .with_incognito(private)
             .with_ipc_handler(move |request| q1.push(Event::Ipc(tab_id, request.into_body())))
             .with_document_title_changed_handler(move |title| q2.push(Event::Title(tab_id, title)))
@@ -557,8 +586,24 @@ impl Browser {
                 q5.push(Event::Download(tab_id, url));
                 false
             })
+            .with_drag_drop_handler(move |event| {
+                // Files dropped on a page open in tabs (instead of replacing the page).
+                if let wry::DragDropEvent::Drop { paths, .. } = event {
+                    if !paths.is_empty() {
+                        q6.push(Event::OpenFiles(paths));
+                        return true;
+                    }
+                }
+                false
+            })
             .with_navigation_handler(move |url| {
                 if let Ok(parsed) = Url::parse(&url) {
+                    if let Some(base) = &pdf_base {
+                        if crate::startview::is_pdf(&parsed) && matches!(parsed.scheme(), "http" | "https" | "file") {
+                            queue.push(Event::Redirect(tab_id, crate::startview::pdf_viewer(base, &parsed)));
+                            return false;
+                        }
+                    }
                     if matches!(parsed.scheme(), "http" | "https") && looks_like_download(&parsed) {
                         queue.push(Event::Download(tab_id, url));
                         return false;
@@ -581,7 +626,7 @@ impl Browser {
         match builder.build_as_child(&*self.window) {
             Ok(webview) => {
                 crate::adblock::attach(&webview);
-                crate::engine_ext::tune(&webview);
+                crate::engine_ext::tune(&webview, self.profile.settings.potato);
                 #[cfg(target_os = "windows")]
                 if let Some(dark) = self.page_dark {
                     use wry::WebViewExtWindows;
@@ -746,7 +791,7 @@ impl Browser {
     /// reopening it (Ctrl+Shift+T) is instant, scroll position and all.
     fn park(&mut self, tab: Tab) {
         self.parked = None;
-        if !self.profile.settings.keep_closed_tab || tab.url().is_none() {
+        if !self.profile.settings.keeps_closed_tab() || tab.url().is_none() {
             return;
         }
         let Some(webview) = &tab.webview else { return };
@@ -1027,9 +1072,22 @@ impl Browser {
                         }
                     }
                 },
+                Event::Redirect(id, url) => {
+                    if let Some(w) = self.tab_index(id).and_then(|i| self.tabs[i].webview.as_ref()) {
+                        let _ = w.load_url(&url);
+                    }
+                },
+                Event::OpenFiles(paths) => {
+                    for path in paths {
+                        if let Ok(url) = Url::from_file_path(&path) {
+                            self.open_tab(Some(url));
+                        }
+                    }
+                },
                 Event::Load(id, event, url) => {
                     let Some(i) = self.tab_index(id) else { continue };
-                    let parsed = Url::parse(&url).ok();
+                    // A PDF in the built-in viewer counts as the PDF's own address.
+                    let parsed = Url::parse(&url).ok().map(|u| crate::startview::shown_url(&u).unwrap_or(u));
                     match event {
                         PageLoadEvent::Started => {
                             let tab = &mut self.tabs[i];
@@ -1110,6 +1168,10 @@ impl Browser {
     /// A message from Ferrum's page script.
     fn handle_page_message(&mut self, id: u64, message: &str) {
         let Ok(m) = serde_json::from_str::<serde_json::Value>(message) else { return };
+        if id == crate::startview::START_ID {
+            self.handle_start_message(&m);
+            return;
+        }
         let Some(i) = self.tab_index(id) else { return };
         match m["t"].as_str().unwrap_or("") {
             "key" => {
@@ -1137,6 +1199,16 @@ impl Browser {
             "blocked" => {
                 self.tabs[i].blocked = m["count"].as_u64().unwrap_or(0) as u32;
                 self.window.request_redraw();
+            },
+            "download" => {
+                // The PDF viewer's Download button.
+                if let Some(url) = m["url"].as_str().and_then(|u| Url::parse(u).ok()) {
+                    if url.scheme() == "file" {
+                        self.toast("This PDF is already on your computer");
+                    } else {
+                        self.start_download(url, None);
+                    }
+                }
             },
             "icon" => {
                 if let Some(href) = m["href"].as_str() {
@@ -1278,6 +1350,12 @@ impl Browser {
                 return true;
             },
             WindowEvent::Moved(_) => self.window.request_redraw(),
+            // Files dropped on Ferrum's own interface (tab strip, start page…).
+            WindowEvent::DroppedFile(path) => {
+                if let Ok(url) = Url::from_file_path(path) {
+                    self.open_tab(Some(url));
+                }
+            },
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } => {
                 // Clicks inside a popup go to the popup's own window, so any
@@ -1394,6 +1472,7 @@ impl Browser {
             "h" if cmd => self.toggle_panel(SidePanel::History),
             "j" if cmd => self.toggle_panel(SidePanel::Downloads),
             "o" if cmd && shift => self.toggle_panel(SidePanel::Bookmarks),
+            "o" if cmd => self.open_file(),
             "," if cmd => self.open_settings(),
             "=" | "+" if cmd => self.zoom_step(true),
             "-" if cmd => self.zoom_step(false),
@@ -1603,10 +1682,10 @@ impl Browser {
             return;
         }
         self.last_sleep_check = Instant::now();
-        if !self.profile.settings.sleep_tabs {
+        if !self.profile.settings.sleeps_tabs() {
             return;
         }
-        let limit = Duration::from_secs(self.profile.settings.sleep_minutes.max(1) as u64 * 60);
+        let limit = Duration::from_secs(self.profile.settings.sleep_after_minutes().max(1) as u64 * 60);
         for i in 0..self.tabs.len() {
             let tab = &self.tabs[i];
             if i == self.active || tab.playing || tab.pinned || tab.loading() || tab.webview.is_none() || tab.last_used.elapsed() < limit {
@@ -1924,6 +2003,8 @@ impl Browser {
             (r.height() * p).round().max(1.0) as u32,
         );
         let page_visible = r.is_positive();
+        self.layout_start_view(bounds, page_visible);
+        let potato = self.profile.settings.potato;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let Some(webview) = &tab.webview else { continue };
             let visible = i == self.active && page_visible && tab.internal.is_none() && tab.reader.is_none();
@@ -1937,6 +2018,9 @@ impl Browser {
             if visible != tab.shown {
                 tab.shown = visible;
                 let _ = webview.set_visible(visible);
+                if potato {
+                    crate::engine_ext::set_low_memory(webview, !visible);
+                }
                 if visible && !interface_has_keyboard {
                     let _ = webview.focus();
                 }
@@ -1949,6 +2033,214 @@ impl Browser {
         } else if !interface_has_keyboard {
             self.page_unfocused = false;
         }
+    }
+
+    // ----- the new tab page with a video (startview.rs) -----
+
+    /// Copy a video into the profile and use it as the new tab background.
+    pub(crate) fn choose_start_video(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("Videos", crate::startview::VIDEO_TYPES).pick_file() else { return };
+        let Some(dir) = self.profile.dir().map(|d| d.join("backgrounds")) else {
+            // A private window has no profile folder: use the file where it is.
+            self.profile.settings.start_video = path.to_string_lossy().into_owned();
+            self.profile.settings.start_background = crate::profile::StartBackground::Video;
+            return;
+        };
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_ascii_lowercase();
+        let target = dir.join(format!("video-{}.{ext}", crate::profile::now_secs()));
+        let copied = std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&path, &target));
+        match copied {
+            Ok(_) => {
+                // Remove the previous video.
+                let old = std::mem::replace(&mut self.profile.settings.start_video, target.to_string_lossy().into_owned());
+                if !old.is_empty() && std::path::Path::new(&old).starts_with(&dir) {
+                    let _ = std::fs::remove_file(old);
+                }
+                self.profile.settings.start_background = crate::profile::StartBackground::Video;
+                self.profile.mark_dirty();
+            },
+            Err(e) => self.toast(format!("Couldn't use that video: {e}")),
+        }
+    }
+
+    /// What the video start page shows now.
+    fn start_page_data(&self) -> crate::startview::StartData {
+        let s = &self.profile.settings;
+        let bookmarks: Vec<_> = if s.start_show_bookmarks {
+            self.profile.bookmarks.iter().take(s.start_tiles as usize).map(|b| (b.title.clone(), b.url.clone())).collect()
+        } else {
+            Vec::new()
+        };
+        let frequent = if s.start_show_frequent {
+            let mut top: Vec<_> = self.profile.history.iter().filter(|h| !self.profile.is_bookmarked(&h.url)).collect();
+            top.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_visit.cmp(&a.last_visit)));
+            top.into_iter().take((s.start_tiles as usize / 2).max(4)).map(|h| (h.title.clone(), h.url.clone())).collect()
+        } else {
+            Vec::new()
+        };
+        let video = Some(std::path::PathBuf::from(&s.start_video)).filter(|p| !s.start_video.is_empty() && p.is_file());
+        crate::startview::StartData {
+            clock: s.start_show_clock,
+            clock_24h: s.clock_24h,
+            title: if s.start_title.trim().is_empty() { APP_NAME.to_string() } else { s.start_title.clone() },
+            private: self.profile.is_private(),
+            search: s.start_show_search,
+            engine: s.search_engine.name().to_string(),
+            bookmarks,
+            frequent,
+            dim: s.video_dim,
+            accent: s.accent,
+            video,
+        }
+    }
+
+    /// Whether the new tab page should be the video page.
+    pub(crate) fn start_video_enabled(&self) -> bool {
+        let s = &self.profile.settings;
+        s.start_look() == crate::profile::StartBackground::Video && !s.start_video.is_empty()
+    }
+
+    /// Show, place, update or hide the video start page.
+    fn layout_start_view(&mut self, bounds: (i32, i32, u32, u32), page_visible: bool) {
+        let wanted = self.start_video_wanted && page_visible;
+        // Free the video page when it's switched off (or Potato PC mode is on).
+        if self.start_view.is_some() && !self.start_video_enabled() {
+            self.start_view = None;
+            self.start_data = None;
+        }
+        if wanted && self.start_view.is_none() {
+            log::debug!("creating the video start page");
+            self.start_view = self.create_start_view();
+        }
+        let Some(view) = &self.start_view else { return };
+        if wanted {
+            let data = self.start_page_data();
+            if self.start_data.as_ref() != Some(&data) {
+                if let Ok(mut served) = self.start_served.lock() {
+                    served.html = crate::startview::html(&data);
+                    served.video = data.video.clone();
+                }
+                self.start_data = Some(data);
+                if let Some(server) = &self.start_server {
+                    let _ = view.load_url(&server.url());
+                }
+            }
+            if self.start_bounds != bounds {
+                self.start_bounds = bounds;
+                let _ = view.set_bounds(wry::Rect {
+                    position: PhysicalPosition::new(bounds.0, bounds.1).into(),
+                    size: PhysicalSize::new(bounds.2, bounds.3).into(),
+                });
+            }
+        }
+        if wanted != self.start_shown {
+            log::debug!("video start page shown={wanted} bounds={bounds:?}");
+            self.start_shown = wanted;
+            let _ = view.set_visible(wanted);
+        }
+    }
+
+    /// Ferrum's private local server (video start page, PDF viewer), started when first needed.
+    fn local_server(&mut self) -> Option<&crate::startview::Server> {
+        if self.start_server.is_none() {
+            match crate::startview::Server::start(self.start_served.clone()) {
+                Ok(server) => self.start_server = Some(server),
+                Err(e) => log::error!("Couldn't start Ferrum's local server: {e}"),
+            }
+        }
+        self.start_server.as_ref()
+    }
+
+    /// Open a file from this computer in a new tab (Ctrl+O, the menu).
+    pub(crate) fn open_file(&mut self) {
+        let files = rfd::FileDialog::new()
+            .add_filter(
+                "Pages, pictures, video, audio and PDFs",
+                &["html", "htm", "xhtml", "svg", "pdf", "txt", "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "mp4", "m4v", "mov", "webm", "ogv", "mp3", "m4a", "aac", "wav", "flac", "ogg", "oga", "opus", "json", "xml"],
+            )
+            .add_filter("All files", &["*"])
+            .pick_files();
+        for path in files.unwrap_or_default() {
+            if let Ok(url) = Url::from_file_path(&path) {
+                self.open_tab(Some(url));
+            }
+        }
+    }
+
+    fn create_start_view(&mut self) -> Option<WebView> {
+        if self.local_server().is_none() {
+            self.profile.settings.start_background = crate::profile::StartBackground::Plain;
+            return None;
+        }
+        let url = self.start_server.as_ref().map(|s| s.url()).unwrap_or_default();
+        let queue = Queue { events: self.events.clone(), window: self.window.clone() };
+        let script = self.page_script();
+        let result = WebViewBuilder::new_with_web_context(&mut self.web_context)
+            .with_initialization_script(script)
+            .with_url(&url)
+            // Created visible at 1×1 like tab pages (on Linux a view created
+            // hidden may never show); layout sizes it.
+            .with_visible(true)
+            .with_autoplay(true)
+            .with_incognito(self.profile.is_private())
+            .with_bounds(wry::Rect { position: PhysicalPosition::new(0, 0).into(), size: PhysicalSize::new(1, 1).into() })
+            .with_ipc_handler(move |request| queue.push(Event::Ipc(crate::startview::START_ID, request.into_body())))
+            .build_as_child(&*self.window);
+        match result {
+            Ok(view) => {
+                self.start_data = None;
+                self.start_shown = true;
+                self.start_bounds = (0, 0, 0, 0);
+                Some(view)
+            },
+            Err(e) => {
+                log::error!("Couldn't create the video start page: {e}");
+                // Don't try again every frame.
+                self.profile.settings.start_background = crate::profile::StartBackground::Plain;
+                None
+            },
+        }
+    }
+
+    fn handle_start_message(&mut self, m: &serde_json::Value) {
+        match m["t"].as_str().unwrap_or("") {
+            "start-go" => {
+                if let Some(q) = m["q"].as_str() {
+                    self.navigate_input(q);
+                }
+            },
+            "start-open" => {
+                let Some(url) = m["url"].as_str().map(str::to_owned) else { return };
+                if m["newTab"].as_bool().unwrap_or(false) {
+                    if let Ok(u) = Url::parse(&url) {
+                        self.open_background_tab(u);
+                    }
+                } else {
+                    self.navigate_input(&url);
+                }
+            },
+            "start-remove" => {
+                if let Some(url) = m["url"].as_str().map(str::to_owned) {
+                    let target = if m["bookmark"].as_bool().unwrap_or(false) { LinkMenu::Bookmark(url) } else { LinkMenu::Frequent(url) };
+                    self.remove_link(&target);
+                }
+            },
+            "key" => {
+                let shortcut = Shortcut {
+                    key: m["key"].as_str().unwrap_or("").to_string(),
+                    ctrl: m["ctrl"].as_bool().unwrap_or(false),
+                    meta: m["meta"].as_bool().unwrap_or(false),
+                    shift: m["shift"].as_bool().unwrap_or(false),
+                    alt: m["alt"].as_bool().unwrap_or(false),
+                };
+                if self.handle_shortcut(&shortcut) {
+                    self.window.request_redraw();
+                }
+            },
+            "click" => self.close_popups(),
+            _ => {},
+        }
+        self.window.request_redraw();
     }
 
     /// Pages follow the interface's light or dark mode (`prefers-color-scheme`),

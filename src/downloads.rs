@@ -53,11 +53,13 @@ pub struct Downloads {
 
 /// Paths that are usually downloads rather than pages.
 pub fn looks_like_download(url: &url::Url) -> bool {
+    // Videos, audio, images and PDFs aren't here: they open in the tab (the
+    // engines play and show them; PDFs on Linux use the built-in viewer).
+    // Formats the engines can't show (mkv, avi…) are still downloaded.
     const EXTS: &[&str] = &[
         "zip", "7z", "rar", "gz", "tgz", "xz", "bz2", "zst", "tar", "exe", "msi", "dmg", "pkg",
-        "deb", "rpm", "appimage", "apk", "iso", "img", "bin", "jar", "pdf", "doc", "docx", "xls",
-        "xlsx", "ppt", "pptx", "odt", "ods", "csv", "mp3", "flac", "wav", "ogg", "m4a", "mp4",
-        "mkv", "mov", "avi", "torrent", "epub", "crate", "whl",
+        "deb", "rpm", "appimage", "apk", "iso", "img", "bin", "jar", "doc", "docx", "xls",
+        "xlsx", "ppt", "pptx", "odt", "ods", "csv", "mkv", "avi", "wmv", "torrent", "epub", "crate", "whl",
     ];
     let path = url.path().to_ascii_lowercase();
     path.rsplit_once('.')
@@ -91,7 +93,7 @@ fn name_from_disposition(value: &str) -> Option<String> {
     None
 }
 
-fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     url::form_urlencoded::parse(format!("x={}", s.replace('+', "%2B")).as_bytes())
         .next()
         .map(|(_, v)| v.into_owned())
@@ -289,5 +291,8 @@ mod tests {
         assert_eq!(sanitize("../evil:name?.exe"), "_evil_name_.exe");
         assert!(looks_like_download(&url::Url::parse("https://x.org/a/b.ZIP").unwrap()));
         assert!(!looks_like_download(&url::Url::parse("https://x.org/a/b.html").unwrap()));
+        for media in ["a.pdf", "a.mp3", "a.mp4", "a.webm", "a.png", "a.mov", "a.ogg", "a.flac"] {
+            assert!(!looks_like_download(&url::Url::parse(&format!("https://x.org/{media}")).unwrap()), "{media}");
+        }
     }
 }

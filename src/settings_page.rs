@@ -23,7 +23,7 @@ const ENGINE_NAME: &str = if cfg!(target_os = "macos") {
 };
 
 use crate::browser::{APP_NAME, Browser};
-use crate::profile::{CloseButtons, DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, TabWidth, ThemeChoice};
+use crate::profile::{CloseButtons, TabShape, DEFAULT_ACCENT, NewTabPage, SearchEngine, Settings, StartBackground, TabLayout, TabWidth, ThemeChoice};
 use crate::theme::{ThemePreset, mix};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,6 +89,7 @@ impl Section {
 /// Every setting on the page.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Setting {
+    Potato,
     Theme,
     Mode,
     Accent,
@@ -97,6 +98,7 @@ enum Setting {
     Roundness,
     TabLayout,
     TabWidth,
+    TabShape,
     TabCloseButtons,
     NewTabPosition,
     LastTab,
@@ -118,6 +120,7 @@ enum Setting {
     StartColor,
     Gradient,
     StartImage,
+    StartVideo,
     StartClock,
     StartBookmarks,
     StartFrequent,
@@ -169,6 +172,7 @@ use Section as S;
 use Setting as T;
 
 const ITEMS: &[Item] = &[
+    item(S::Appearance, T::Potato, "Potato PC mode", "For slow or older computers. Turns off animations and fancy start-page backgrounds, puts unused tabs to sleep after 5 minutes, stops videos playing by themselves, and keeps the web engine's memory use low.", "potato slow old low end performance fast speed lag memory ram battery optimize optimise", false),
     item(S::Appearance, T::Theme, "Theme", "Colours for the whole interface. Choosing a theme also sets its accent colour.", "colour color palette dark light skin look", true),
     item(S::Appearance, T::Mode, "Light or dark", "Works with every theme. System follows your computer's setting.", "dark mode light mode system appearance night", false),
     item(S::Appearance, T::Accent, "Accent colour", "Used for highlights, selected items and the loading bar.", "color highlight tint", true),
@@ -178,6 +182,7 @@ const ITEMS: &[Item] = &[
     item(S::Appearance, T::Roundness, "Corner rounding", "How rounded buttons, tabs and fields are.", "radius corners square", false),
     item(S::Tabs, T::TitleBar, "Tabs in the title bar", "Like Chrome: no system title bar, the tabs sit at the top of the window with Ferrum's own minimise, maximise and close buttons. Drag the empty space next to the tabs to move the window.", "window titlebar decorations frame close button minimize maximize chrome", false),
     item(S::Tabs, T::TabLayout, "Tab position", "Along the top, or a list down the side.", "vertical tabs sidebar horizontal", false),
+    item(S::Tabs, T::TabShape, "Tab shape", "", "pill round boxy square sharp corners style", false),
     item(S::Tabs, T::TabWidth, "Tab width", "How wide tabs get when there's room.", "size narrow wide tabs", false),
     item(S::Tabs, T::TabCloseButtons, "Close buttons on tabs", "", "x cross close tab hover", false),
     item(S::Tabs, T::NewTabPosition, "Open new tabs next to the current tab", "Otherwise they open at the end.", "new tab position order", false),
@@ -198,6 +203,7 @@ const ITEMS: &[Item] = &[
     item(S::StartPage, T::Gradient, "Gradient", "Add up to six colours. Drag a dot to move where that colour comes from.", "gradient glow colour color intensity position spread fade", true),
     item(S::StartPage, T::StartColor, "Background colour", "", "wallpaper", false),
     item(S::StartPage, T::StartImage, "Background image", "PNG, JPEG, WebP, GIF or BMP. Large photos are scaled down.", "wallpaper photo picture", false),
+    item(S::StartPage, T::StartVideo, "Video", "MP4, MOV or WebM. It plays muted and on repeat, and only while the new tab page is showing.", "video movie wallpaper animated background mp4 webm mov", true),
     item(S::StartPage, T::StartSearch, "Search box", "", "search field", false),
     item(S::StartPage, T::ClockFormat, "Clock format", "", "time 12 24 hour am pm", false),
     item(S::StartPage, T::StartTiles, "Number of tiles", "The most bookmark tiles and frequently visited tiles shown.", "shortcuts count how many", false),
@@ -425,6 +431,7 @@ impl Browser {
             Setting::StartColor => s.start_background == StartBackground::Color,
             Setting::Gradient => s.start_background == StartBackground::Gradient,
             Setting::StartImage => s.start_background == StartBackground::Image,
+            Setting::StartVideo => s.start_background == StartBackground::Video,
             _ => true,
         }
     }
@@ -476,6 +483,11 @@ impl Browser {
             Setting::HomeButton => {
                 toggle(ui, &mut s.show_home_button, accent);
             },
+            Setting::TabShape => segmented(
+                ui,
+                &mut s.tab_shape,
+                &[(TabShape::Sharp, "Sharp"), (TabShape::Boxy, "Boxy"), (TabShape::Pill, "Pill"), (TabShape::Classic, "Classic")],
+            ),
             Setting::TabWidth => segmented(ui, &mut s.tab_width, &[(TabWidth::Wide, "Wide"), (TabWidth::Normal, "Normal"), (TabWidth::Narrow, "Narrow")]),
             Setting::TabCloseButtons => segmented(
                 ui,
@@ -506,8 +518,17 @@ impl Browser {
             Setting::DomainOnly => {
                 toggle(ui, &mut s.domain_only_address, accent);
             },
+            Setting::Potato => {
+                if toggle(ui, &mut s.potato, accent).changed() {
+                    self.toast(if self.profile.settings.potato { "Potato PC mode on — new pages use less memory" } else { "Potato PC mode off" });
+                }
+            },
             Setting::Animations => {
-                toggle(ui, &mut s.animations, accent);
+                if s.potato {
+                    ui.label(RichText::new("Off in Potato PC mode").weak());
+                } else {
+                    toggle(ui, &mut s.animations, accent);
+                }
             },
             Setting::StartSearch => {
                 toggle(ui, &mut s.start_show_search, accent);
@@ -530,12 +551,14 @@ impl Browser {
                         StartBackground::Gradient => "Gradient",
                         StartBackground::Color => "Colour",
                         StartBackground::Image => "Image",
+                        StartBackground::Video => "Video",
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut s.start_background, StartBackground::Plain, "Plain");
                         ui.selectable_value(&mut s.start_background, StartBackground::Gradient, "Gradient");
                         ui.selectable_value(&mut s.start_background, StartBackground::Color, "Colour");
                         ui.selectable_value(&mut s.start_background, StartBackground::Image, "Image");
+                        ui.selectable_value(&mut s.start_background, StartBackground::Video, "Video");
                     });
             },
             Setting::Gradient => {
@@ -679,6 +702,32 @@ impl Browser {
                 let mut c = Color32::from_rgb(s.start_color[0], s.start_color[1], s.start_color[2]);
                 if ui.color_edit_button_srgba(&mut c).changed() {
                     s.start_color = [c.r(), c.g(), c.b()];
+                }
+            },
+            Setting::StartVideo => {
+                let mut pick = false;
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        pick = ui.button("Choose video…").clicked();
+                        if !s.start_video.is_empty() && ui.button("Remove").clicked() {
+                            s.start_video.clear();
+                        }
+                        let name = std::path::Path::new(&s.start_video)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "No video chosen".into());
+                        ui.label(RichText::new(name).weak());
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Darken");
+                        ui.add(egui::Slider::new(&mut s.video_dim, 0..=80).suffix("%"));
+                    });
+                    if s.potato {
+                        ui.label(RichText::new("Potato PC mode is on, so the new tab page shows a still colour instead.").weak());
+                    }
+                });
+                if pick {
+                    self.choose_start_video();
                 }
             },
             Setting::StartImage => {

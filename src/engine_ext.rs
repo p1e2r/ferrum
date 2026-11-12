@@ -46,21 +46,40 @@ pub fn hard_reload(webview: &wry::WebView) {
     let _ = webview.reload();
 }
 
-/// Cache settings for a new page view.
+/// Cache settings for a new page view. In Potato PC mode, caches are kept
+/// small and pages left aren't kept in memory.
 #[cfg(target_os = "linux")]
-pub fn tune(webview: &wry::WebView) {
+pub fn tune(webview: &wry::WebView, potato: bool) {
     use webkit2gtk::{CacheModel, SettingsExt, WebContextExt, WebViewExt};
     use wry::WebViewExtUnix;
     let view = webview.webview();
-    // Keep as much of pages in memory and on disk as a browser should.
     if let Some(context) = view.context() {
-        context.set_cache_model(CacheModel::WebBrowser);
+        context.set_cache_model(if potato { CacheModel::DocumentBrowser } else { CacheModel::WebBrowser });
     }
     if let Some(settings) = WebViewExt::settings(&view) {
-        settings.set_enable_page_cache(true);
+        settings.set_enable_page_cache(!potato);
         settings.set_enable_dns_prefetching(true);
+        settings.set_enable_smooth_scrolling(!potato);
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn tune(_webview: &wry::WebView) {}
+pub fn tune(_webview: &wry::WebView, _potato: bool) {}
+
+/// Ask the engine to use less memory for a page that isn't shown
+/// (WebView2 only; WebKit manages hidden pages itself).
+#[cfg(target_os = "windows")]
+pub fn set_low_memory(webview: &wry::WebView, low: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL, ICoreWebView2_19,
+    };
+    use windows::core::Interface;
+    use wry::WebViewExtWindows;
+    if let Ok(core) = webview.webview().cast::<ICoreWebView2_19>() {
+        let level = if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+        let _ = unsafe { core.SetMemoryUsageTargetLevel(level) };
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_low_memory(_webview: &wry::WebView, _low: bool) {}

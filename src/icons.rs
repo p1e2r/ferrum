@@ -66,8 +66,11 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, size: f32, enabled: bool, tooltip: &
 
 /// A tab's close button, drawn like Chrome's: a small, thin ✕ that gets a
 /// round grey background on hover and darker when pressed.
-pub fn tab_close_button(ui: &mut Ui, size: f32, tooltip: &str) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+/// `id` keeps the button the same widget from frame to frame (the tab's
+/// contents change as a speaker icon comes and goes).
+pub fn tab_close_button(ui: &mut Ui, id: egui::Id, size: f32, tooltip: &str) -> Response {
+    let rect = ui.allocate_space(Vec2::splat(size)).1;
+    let response = ui.interact(rect, id, Sense::click());
     if ui.is_rect_visible(rect) {
         let visuals = ui.visuals();
         let text = visuals.strong_text_color();

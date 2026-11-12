@@ -27,12 +27,14 @@ pub fn accent(settings: &Settings) -> Color32 {
 pub fn style_key(s: &Settings) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness, s.animations).hash(&mut h);
+    (s.theme_preset, s.theme as u8, s.accent, (s.ui_scale * 100.0) as i32, s.compact, s.roundness, s.animate(), s.potato).hash(&mut h);
     h.finish().max(1)
 }
 
 /// Apply theme, accent colour, size, density and rounding to egui.
 pub fn style(ctx: &egui::Context, settings: &Settings) {
+    // Potato PC mode: simpler edges are cheaper to draw.
+    ctx.tessellation_options_mut(|t| t.feathering = !settings.potato);
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;
         o.fallback_theme = egui::Theme::Light;
@@ -76,7 +78,7 @@ pub fn style(ctx: &egui::Context, settings: &Settings) {
         style.visuals.window_corner_radius = CornerRadius::same(popup_radius(settings));
         style.visuals.menu_corner_radius = CornerRadius::same(popup_radius(settings));
         style.interaction.tooltip_delay = 0.4;
-        if !settings.animations {
+        if !settings.animate() {
             style.animation_time = 0.0;
             style.scroll_animation = egui::style::ScrollAnimation::none();
         }
@@ -426,7 +428,7 @@ impl Browser {
                         let frame = Frame::new()
                             .fill(if selected { ui.visuals().extreme_bg_color } else { Color32::TRANSPARENT })
                             .stroke(if selected { egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.5)) } else { egui::Stroke::NONE })
-                            .corner_radius(CornerRadius::same(self.profile.settings.roundness))
+                            .corner_radius(self.profile.settings.tab_shape.list_corners(self.profile.settings.roundness))
                             .inner_margin(Margin::symmetric(8, 5));
                         let resp = frame.show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -440,10 +442,10 @@ impl Browser {
                                 let bg = if selected { ui.visuals().extreme_bg_color } else { ui.visuals().panel_fill };
                                 faded_title(ui, &tab.title(), selected, ui.available_width() - room, bg);
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    close_rect = Some(crate::icons::tab_close_button(ui, CLOSE_SIZE, "Close tab (Ctrl+W)").rect);
+                                    close_rect = Some(crate::icons::tab_close_button(ui, Id::new(("tab-close", tab.id)), CLOSE_SIZE, "Close tab (Ctrl+W)").rect);
                                     if tab.playing || tab.muted {
                                         let i = if tab.muted { Icon::Muted } else { Icon::Speaker };
-                                        speaker_rect = Some(icon_button(ui, i, 18.0, true, "Mute / unmute tab").rect);
+                                        speaker_rect = Some(ui.push_id("speaker", |ui| icon_button(ui, i, 18.0, true, "Mute / unmute tab")).inner.rect);
                                     }
                                 });
                             });
@@ -679,9 +681,12 @@ impl Browser {
                                     let selected = i == self.active;
                                     let mut close_rect: Option<egui::Rect> = None;
                                     let mut speaker_rect: Option<egui::Rect> = None;
+                                    let shape = self.profile.settings.tab_shape;
                                     let frame = Frame::new()
                                         .fill(if selected { tab_fill } else { Color32::TRANSPARENT })
-                                        .corner_radius(CornerRadius { nw: self.profile.settings.roundness + 2, ne: self.profile.settings.roundness + 2, sw: 0, se: 0 })
+                                        .corner_radius(shape.strip_corners(self.profile.settings.roundness))
+                                        // Floating shapes sit a little above the toolbar.
+                                        .outer_margin(if shape.floats() { Margin { left: 0, right: 0, top: 0, bottom: 4 } } else { Margin::ZERO })
                                         .inner_margin(if tab.pinned { Margin { left: 13, right: 4, top: 6, bottom: 6 } } else { Margin { left: 10, right: 4, top: 6, bottom: 6 } });
                                     let resp = frame.show(ui, |ui| {
                                         if tab.pinned {
@@ -701,24 +706,30 @@ impl Browser {
                                         ui.set_width(width - 14.0);
                                         ui.horizontal(|ui| {
                                             self.tab_icon(ui, tab);
-                                            if tab.playing || tab.muted {
-                                                let i = if tab.muted { Icon::Muted } else { Icon::Speaker };
-                                                let tip = if tab.muted { "Unmute tab" } else { "Mute tab" };
-                                                speaker_rect = Some(icon_button(ui, i, 18.0, true, tip).rect);
-                                            }
                                             let hovered = ui.rect_contains_pointer(ui.max_rect().expand2(vec2(14.0, 6.0)));
                                             let show_close = match self.profile.settings.tab_close_buttons {
                                                 crate::profile::CloseButtons::All => width > 90.0 || selected,
                                                 crate::profile::CloseButtons::Hover => selected || (hovered && width > 70.0),
                                                 crate::profile::CloseButtons::Active => selected,
                                             };
+                                            // The speaker sits after the title, by the close button, so
+                                            // nothing before them changes when sound starts or stops.
+                                            let speaker = tab.playing || tab.muted;
                                             let gap = ui.spacing().item_spacing.x;
-                                            let room = if show_close { CLOSE_SIZE + gap } else { 0.0 };
+                                            let room = if show_close { CLOSE_SIZE + gap } else { 0.0 } + if speaker { 18.0 + gap } else { 0.0 };
                                             let bg = if selected { tab_fill } else { fill };
                                             faded_title(ui, &tab.title(), selected, ui.available_width() - room, bg);
-                                            if show_close {
-                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                                    close_rect = Some(crate::icons::tab_close_button(ui, CLOSE_SIZE, "Close tab (Ctrl+W)").rect);
+                                            if show_close || speaker {
+                                                let area = egui::UiBuilder::new().id_salt(("tab-buttons", tab.id)).layout(Layout::right_to_left(Align::Center));
+                                                ui.scope_builder(area, |ui| {
+                                                    if show_close {
+                                                        close_rect = Some(crate::icons::tab_close_button(ui, Id::new(("tab-close", tab.id)), CLOSE_SIZE, "Close tab (Ctrl+W)").rect);
+                                                    }
+                                                    if speaker {
+                                                        let i = if tab.muted { Icon::Muted } else { Icon::Speaker };
+                                                        let tip = if tab.muted { "Unmute tab" } else { "Mute tab" };
+                                                        speaker_rect = Some(icon_button(ui, i, 18.0, true, tip).rect);
+                                                    }
                                                 });
                                             }
                                         });
@@ -1059,6 +1070,7 @@ impl Browser {
 
     fn draw_content(&mut self, ui: &mut Ui) {
         let rect = self.content_rect;
+        self.start_video_wanted = false;
         match self.active_tab().internal {
             Some(crate::browser::InternalPage::Settings) => {
                 self.draw_settings_page(ui, rect);
@@ -1080,6 +1092,12 @@ impl Browser {
             return;
         }
         if self.active_webview().is_none() {
+            if self.start_video_enabled() {
+                // The video start page (a web view) is placed over this area.
+                self.start_video_wanted = true;
+                ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(17, 17, 17));
+                return;
+            }
             self.draw_start_page(ui, rect);
             return;
         }
@@ -1119,8 +1137,9 @@ impl Browser {
 
         // Background, and whether text on it should be light.
         let mut light_text = false;
-        match settings.start_background {
-            StartBackground::Plain => {
+        match settings.start_look() {
+            // Video falls back to the plain look here (Potato mode, or no video chosen).
+            StartBackground::Plain | StartBackground::Video => {
                 painter.rect_filled(rect, 0.0, ui.visuals().window_fill);
             },
             StartBackground::Color => {

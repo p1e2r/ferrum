@@ -30,6 +30,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         ("Ctrl+F", "Find in page"),
         ("Ctrl+G, F3 (Shift for previous)", "Next match"),
         ("F9, Ctrl+Alt+R", "Reader mode"),
+        ("Ctrl+O", "Open a file (pages, pictures, video, audio, PDF)"),
         ("Ctrl+P", "Print or save as PDF (system print dialog)"),
         ("Ctrl + / Ctrl − / Ctrl 0", "Zoom in / out / reset"),
         ("Ctrl+scroll, trackpad pinch", "Zoom"),

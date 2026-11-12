@@ -31,6 +31,7 @@ mod pagescript;
 mod profile;
 mod reader;
 mod settings_page;
+mod startview;
 mod theme;
 mod ui;
 mod updates;

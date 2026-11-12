@@ -102,6 +102,8 @@ pub enum StartBackground {
     Color,
     /// An image file from disk.
     Image,
+    /// A video, played muted and looped (see startview.rs).
+    Video,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +170,8 @@ pub struct Settings {
 
     /// How wide tabs can get.
     pub tab_width: TabWidth,
+    /// The shape of tabs.
+    pub tab_shape: TabShape,
     /// Which tabs show a close button.
     pub tab_close_buttons: CloseButtons,
     /// New tabs open next to the current one instead of at the end.
@@ -183,6 +187,8 @@ pub struct Settings {
     pub domain_only_address: bool,
     /// Animate panels, switches and fades.
     pub animations: bool,
+    /// Potato PC mode: everything tuned for slow, low-memory computers.
+    pub potato: bool,
 
     // Start page
     pub start_show_search: bool,
@@ -206,6 +212,10 @@ pub struct Settings {
     #[serde(skip_serializing)]
     pub gradient_source: Option<[f32; 2]>,
     pub start_image: String,
+    /// The new tab video, copied into the profile's `backgrounds` folder.
+    pub start_video: String,
+    /// How much the video is darkened so text stays readable, in percent.
+    pub video_dim: u8,
     pub start_show_clock: bool,
     pub start_show_bookmarks: bool,
     pub start_show_frequent: bool,
@@ -258,6 +268,33 @@ impl Default for GradientSource {
     }
 }
 
+impl Settings {
+    /// Animations, unless Potato PC mode is on.
+    pub fn animate(&self) -> bool {
+        self.animations && !self.potato
+    }
+
+    /// Minutes before an unused tab is put to sleep (sooner in Potato PC mode).
+    pub fn sleep_after_minutes(&self) -> u32 {
+        if self.potato { self.sleep_minutes.min(5) } else { self.sleep_minutes }
+    }
+
+    /// Whether unused tabs sleep (always in Potato PC mode).
+    pub fn sleeps_tabs(&self) -> bool {
+        self.sleep_tabs || self.potato
+    }
+
+    /// Whether the last closed tab stays loaded (never in Potato PC mode).
+    pub fn keeps_closed_tab(&self) -> bool {
+        self.keep_closed_tab && !self.potato
+    }
+
+    /// The start page background actually drawn: plain in Potato PC mode.
+    pub fn start_look(&self) -> StartBackground {
+        if self.potato { StartBackground::Plain } else { self.start_background }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TabWidth {
     Narrow,
@@ -273,6 +310,46 @@ impl TabWidth {
             TabWidth::Normal => 220.0,
             TabWidth::Wide => 300.0,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TabShape {
+    /// Rounded at the top, joined to the toolbar.
+    #[default]
+    Classic,
+    /// Fully rounded ends.
+    Pill,
+    /// A box with slightly rounded corners.
+    Boxy,
+    /// Square corners.
+    Sharp,
+}
+
+impl TabShape {
+    /// Corner radii for a tab in the tab strip (`round`: the corner setting).
+    pub fn strip_corners(self, round: u8) -> egui::CornerRadius {
+        match self {
+            TabShape::Classic => egui::CornerRadius { nw: round.saturating_add(2), ne: round.saturating_add(2), sw: 0, se: 0 },
+            TabShape::Pill => egui::CornerRadius::same(16),
+            TabShape::Boxy => egui::CornerRadius::same(5),
+            TabShape::Sharp => egui::CornerRadius::ZERO,
+        }
+    }
+
+    /// Corner radii for a tab in the side tab list.
+    pub fn list_corners(self, round: u8) -> egui::CornerRadius {
+        match self {
+            TabShape::Classic => egui::CornerRadius::same(round),
+            TabShape::Pill => egui::CornerRadius::same(16),
+            TabShape::Boxy => egui::CornerRadius::same(5),
+            TabShape::Sharp => egui::CornerRadius::ZERO,
+        }
+    }
+
+    /// Whether tabs float (with a little space around) rather than join the toolbar.
+    pub fn floats(self) -> bool {
+        matches!(self, TabShape::Pill | TabShape::Boxy)
     }
 }
 
@@ -330,6 +407,7 @@ impl Default for Settings {
             show_bookmark_button: true,
             show_downloads_button: true,
             tab_width: TabWidth::Normal,
+            tab_shape: TabShape::Classic,
             tab_close_buttons: CloseButtons::All,
             new_tab_next_to_current: false,
             close_window_with_last_tab: false,
@@ -339,6 +417,8 @@ impl Default for Settings {
             show_loading_bar: true,
             domain_only_address: false,
             animations: true,
+            // On by default on computers with two or fewer processor cores.
+            potato: std::thread::available_parallelism().map(|n| n.get() <= 2).unwrap_or(false),
             start_show_search: true,
             clock_24h: true,
             start_tiles: 16,
@@ -352,6 +432,8 @@ impl Default for Settings {
             gradient_spread: None,
             gradient_source: None,
             start_image: String::new(),
+            start_video: String::new(),
+            video_dim: 30,
             start_show_clock: false,
             start_show_bookmarks: true,
             start_show_frequent: true,

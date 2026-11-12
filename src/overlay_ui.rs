@@ -250,6 +250,10 @@ impl Browser {
             self.toggle_reader();
             close = true;
         }
+        if row(ui, "Open file…", "Ctrl+O") {
+            self.open_file();
+            close = true;
+        }
         if row(ui, "Print…", "Ctrl+P") {
             self.print();
             close = true;
