@@ -352,8 +352,8 @@ fun copy(context: Context, text: String) {
 private fun TabCount(browser: Browser) {
     val colors = MaterialTheme.colorScheme
     Box(
-        Modifier.size(44.dp).clip(CircleShape).combinedClickable(
-            onClick = { if (!browser.justSubmitted()) { browser.editing = false; browser.captureThumbnail(browser.active); browser.switcherOpen = true } },
+        Modifier.size(44.dp).clip(CircleShape).focusProperties { canFocus = false }.combinedClickable(
+            onClick = { browser.editing = false; browser.captureThumbnail(browser.active); browser.switcherOpen = true },
             onLongClick = { browser.newTab() },
             onClickLabel = "Show tabs",
         ).testTag("tabs"),
@@ -381,7 +381,9 @@ private fun Menu(activity: MainActivity) {
     val update = updater.state as? Updater.State.Available
 
     Box {
-        IconButton(onClick = { if (!browser.justSubmitted()) open = true }, modifier = Modifier.testTag("menu")) {
+        // The toolbar buttons never take keyboard focus: a keyboard's Enter, released after an
+        // address is submitted, would otherwise press whichever one Android focused next.
+        IconButton(onClick = { open = true }, modifier = Modifier.focusProperties { canFocus = false }.testTag("menu")) {
             Box {
                 Icon(Icons.Filled.MoreVert, "Menu", tint = colors.onSurface)
                 if (update != null) Box(Modifier.size(8.dp).clip(CircleShape).background(colors.primary).align(Alignment.TopEnd))
