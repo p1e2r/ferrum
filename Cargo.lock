@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "ferrum"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "block2 0.6.2",
  "chrono",
