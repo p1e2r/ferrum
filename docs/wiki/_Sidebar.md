@@ -9,4 +9,5 @@
 - [Profile and data](Profile-and-Data)
 - [Downloads](Downloads)
 - [Building and releasing](Building)
+- [Android](Android)
 - [Contributing](Contributing)

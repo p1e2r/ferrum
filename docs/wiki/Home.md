@@ -2,6 +2,8 @@
 
 Ferrum is a desktop web browser with a native Rust interface. Web pages are shown by the **system's own web engine** through [wry](https://github.com/tauri-apps/wry) — WebKit on macOS, WebView2 (Chromium) on Windows, WebKitGTK on Linux. Everything around the page — tabs, toolbar, address bar, menus, side panels and popups — is drawn by Ferrum itself with [egui](https://github.com/emilk/egui). There is no HTML, CSS or JavaScript in the application's interface.
 
+There's also an Android app, in Kotlin with Jetpack Compose and Android System WebView: see [Android](Android).
+
 These pages explain how the code works, so you can find your way around and change it.
 
 ## Pages
@@ -16,6 +18,7 @@ These pages explain how the code works, so you can find your way around and chan
 | [Profile and data](Profile-and-Data) | Settings, bookmarks, history, session, cookies — file formats and saving |
 | [Downloads](Downloads) | How downloads are detected, run and shown |
 | [Building and releasing](Building) | Build scripts, cross-compiling from a Mac, CI and nightlies |
+| [Android](Android) | Ferrum for Android: its files, building, CI, signing |
 | [Contributing](Contributing) | Code style, adding a feature, testing |
 
 ## Thirty-second tour

@@ -2,12 +2,12 @@
 
 # Ferrum
 
-A fast, light desktop web browser with a native Rust interface.
+A fast, light web browser: a desktop app with a native Rust interface, and an Android app.
 
 - **Engine:** the system's own web engine, through [wry](https://github.com/tauri-apps/wry): **WebKit** on macOS (as in Safari), **WebView2** on Windows (Chromium, as in Edge), **WebKitGTK** on Linux. Sites like GitHub, YouTube and Google work as they do in those browsers, and the engine gets security updates with the OS.
 - **Interface:** tabs, toolbar, address bar, menus, side panels and popups are all drawn natively in Rust with [egui](https://github.com/emilk/egui). The app itself contains no HTML, CSS or JavaScript. Popups that float over the page (menu, suggestions, site info, notifications) are small native windows of their own.
 - **Light:** a ~15 MB app that builds in minutes; runs well on old machines.
-- **Platforms:** macOS, Windows, Linux.
+- **Platforms:** macOS, Windows, Linux, and Android (8.0 and later, see [Android](#android)).
 - **License:** MIT.
 
 ## Features
@@ -61,6 +61,25 @@ A fast, light desktop web browser with a native Rust interface.
 - Tabs you haven't used for a while are put to sleep, freeing their memory.
 - History and bookmark lists only lay out the rows on screen.
 
+## Android
+
+Ferrum for Android is a native app in `android/`, written in Kotlin with Jetpack Compose. Pages are shown by Android System WebView, the same Chromium engine Chrome uses, which updates through the Play Store on its own.
+
+It has Ferrum's look and most of its features:
+- tabs with a card switcher, and a start page with the clock, a search box and your sites;
+- the address-bar calculator, suggestions from bookmarks and history, and the 6 search engines;
+- ad and tracker blocking, with a shield in the address bar that turns it off for one site;
+- bookmarks and history, each with a delete button on every row;
+- find in page, downloads, sharing and the desktop-site switch;
+- light, dark or system theme in Ferrum's colour themes, with optional dark websites;
+- one-tap updates from GitHub Releases, checked against `SHA256SUMS`.
+
+It can also be set as the phone's default browser.
+
+**Install:** download `Ferrum-<version>-android.apk` from [Releases](../../releases/latest) on the phone and open it. Android asks once to allow installing apps from your browser or file manager. After that, updates come from ⋮ → Update.
+
+**Build:** with JDK 17 and the Android SDK, `cd android && ./gradlew assembleDebug`, or open `android/` in Android Studio. GitHub Actions runs the unit tests, builds the signed release APK and runs the app on an emulator, keeping screenshots of each screen. Release APKs are signed with Ferrum's key, which lives in `android/signing/` encrypted and is unlocked by the `ANDROID_KEYSTORE_PASSWORD` secret. Package name: `io.github.p1e2r.ferrum`.
+
 ## System requirements
 
 | | Minimum | Comfortable |
@@ -74,7 +93,7 @@ Light browsing works on old hardware; heavy web apps and video sites need more. 
 
 ## Download
 
-Get the newest version from the [Releases](../../releases/latest) page: a `.dmg` for Apple Silicon or Intel Macs, a `.zip` for Windows and a `.tar.gz` for Linux (x86-64 or ARM). After that, Ferrum updates itself in one click from the ☰ menu.
+Get the newest version from the [Releases](../../releases/latest) page: a `.dmg` for Apple Silicon or Intel Macs, a `.zip` for Windows, a `.tar.gz` for Linux (x86-64 or ARM) and an `.apk` for Android. After that, Ferrum updates itself in one click from the ☰ menu.
 
 On macOS, Ferrum isn't signed with an Apple developer certificate yet, so the first time, allow it in System Settings → Privacy & Security → "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Ferrum.app`). Updates installed by Ferrum don't need this.
 
@@ -181,6 +200,7 @@ src/find.rs       find in page
 src/location.rs   address-bar text → URL or search
 src/icons.rs      vector toolbar icons
 scripts/          build scripts for macOS, Linux and Windows
+android/          Ferrum for Android (Kotlin, Jetpack Compose, Android WebView)
 ```
 
 ## Limitations
@@ -192,6 +212,7 @@ Ferrum shows pages with the engine your OS provides, so a page looks the same as
 **Made for Ferrum** (this project, under the MIT license):
 
 - All the Rust code in `src/` — the interface, tabs, address bar and calculator, settings, profiles, bookmarks and history, import, downloads, the updater, ad blocking, reader mode, the new tab page, energy saver and Lite mode
+- The Android app in `android/` (Kotlin), including its ports of the calculator, address handling and ad blocking
 - The build scripts in `scripts/` and `docker/`, and the GitHub Actions workflow in `.github/`
 - The icon (`assets/icon.png`, `assets/icon-256.png`) and the macOS entitlements file
 - The documentation: this README and the wiki in `docs/wiki/`
@@ -200,12 +221,12 @@ Ferrum shows pages with the engine your OS provides, so a page looks the same as
 
 | What | By | Where | License |
 |---|---|---|---|
-| The web engine that shows pages | Apple (WebKit), Microsoft (WebView2), the WebKitGTK project | Already on your computer, not in this repository | Their own |
+| The web engine that shows pages | Apple (WebKit), Microsoft (WebView2), the WebKitGTK project, Google (Android System WebView) | Already on your computer or phone, not in this repository | Their own |
 | pdf.js, the PDF viewer used on Linux | Mozilla | `assets/pdfjs/` (copied in unchanged) | Apache-2.0 |
 | Ad and tracker list | Peter Lowe ([pgl.yoyo.org](https://pgl.yoyo.org/adservers/)) | Downloaded when Ferrum runs, not in this repository | Free to use, see the site |
 | Rust libraries (crates) | Their authors | Listed in `Cargo.toml`, downloaded when building | Mostly MIT and/or Apache-2.0 |
 
-The main libraries: [wry](https://github.com/tauri-apps/wry) and [muda](https://github.com/tauri-apps/muda) (the Tauri project) for the web view and the macOS menu bar; [egui](https://github.com/emilk/egui) for drawing the interface; [winit](https://github.com/rust-windowing/winit) and [glutin](https://github.com/rust-windowing/glutin) for windows and OpenGL; [rustls](https://github.com/rustls/rustls) and [ureq](https://github.com/algesten/ureq) for Ferrum's own connections; [rusqlite](https://github.com/rusqlite/rusqlite) (SQLite) and [plist](https://github.com/ebarnard/rust-plist) for importing from other browsers; [image](https://github.com/image-rs/image), [serde](https://serde.rs), [rfd](https://github.com/PolyMeilex/rfd), [notify-rust](https://github.com/hoodie/notify-rust), [chrono](https://github.com/chronotope/chrono), [sha2](https://github.com/RustCrypto/hashes) and [dirs](https://github.com/dirs-dev/dirs-rs). `cargo tree` lists every one.
+The main libraries: [wry](https://github.com/tauri-apps/wry) and [muda](https://github.com/tauri-apps/muda) (the Tauri project) for the web view and the macOS menu bar; [egui](https://github.com/emilk/egui) for drawing the interface; [winit](https://github.com/rust-windowing/winit) and [glutin](https://github.com/rust-windowing/glutin) for windows and OpenGL; [rustls](https://github.com/rustls/rustls) and [ureq](https://github.com/algesten/ureq) for Ferrum's own connections; [rusqlite](https://github.com/rusqlite/rusqlite) (SQLite) and [plist](https://github.com/ebarnard/rust-plist) for importing from other browsers; [image](https://github.com/image-rs/image), [serde](https://serde.rs), [rfd](https://github.com/PolyMeilex/rfd), [notify-rust](https://github.com/hoodie/notify-rust), [chrono](https://github.com/chronotope/chrono), [sha2](https://github.com/RustCrypto/hashes) and [dirs](https://github.com/dirs-dev/dirs-rs). `cargo tree` lists every one. The Android app uses Google's [AndroidX](https://developer.android.com/jetpack/androidx) libraries and [Jetpack Compose](https://developer.android.com/compose) (Apache-2.0), and the Gradle wrapper (Apache-2.0); `android/app/build.gradle.kts` lists them.
 
 ## License
 
