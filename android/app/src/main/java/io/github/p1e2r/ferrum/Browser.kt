@@ -78,6 +78,9 @@ class Browser(val activity: MainActivity, val settings: Settings, val store: Sto
     var screen by mutableStateOf(Screen.Browser)
     var switcherOpen by mutableStateOf(false)
     var editing by mutableStateOf(false)
+    /** When an address was last submitted: a keyboard's Enter is released just after, and mustn't press the next button. */
+    var submittedAt = 0L
+    fun justSubmitted() = android.os.SystemClock.uptimeMillis() - submittedAt < 600
     /** What's typed in the address bar while editing. */
     var addressText by mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(""))
     var findOpen by mutableStateOf(false)
@@ -200,6 +203,7 @@ class Browser(val activity: MainActivity, val settings: Settings, val store: Sto
     fun go(text: String) {
         val t = text.trim()
         if (t.isEmpty()) return
+        submittedAt = android.os.SystemClock.uptimeMillis()
         load(Location.toUrl(t, settings.searchEngine))
     }
 

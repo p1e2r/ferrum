@@ -353,7 +353,7 @@ private fun TabCount(browser: Browser) {
     val colors = MaterialTheme.colorScheme
     Box(
         Modifier.size(44.dp).clip(CircleShape).combinedClickable(
-            onClick = { browser.editing = false; browser.captureThumbnail(browser.active); browser.switcherOpen = true },
+            onClick = { if (!browser.justSubmitted()) { browser.editing = false; browser.captureThumbnail(browser.active); browser.switcherOpen = true } },
             onLongClick = { browser.newTab() },
             onClickLabel = "Show tabs",
         ).testTag("tabs"),
@@ -381,7 +381,7 @@ private fun Menu(activity: MainActivity) {
     val update = updater.state as? Updater.State.Available
 
     Box {
-        IconButton(onClick = { open = true }, modifier = Modifier.testTag("menu")) {
+        IconButton(onClick = { if (!browser.justSubmitted()) open = true }, modifier = Modifier.testTag("menu")) {
             Box {
                 Icon(Icons.Filled.MoreVert, "Menu", tint = colors.onSurface)
                 if (update != null) Box(Modifier.size(8.dp).clip(CircleShape).background(colors.primary).align(Alignment.TopEnd))
