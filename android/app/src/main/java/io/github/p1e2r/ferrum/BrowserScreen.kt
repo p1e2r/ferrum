@@ -92,6 +92,11 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -275,7 +280,16 @@ private fun TopBar(activity: MainActivity, text: TextFieldValue, onText: (TextFi
                     // Focusable only while editing: otherwise Android would hand it focus on its
                     // own (with a keyboard, or after a page loads) and the bar would never let go.
                     modifier = Modifier.fillMaxWidth().focusRequester(addressFocus).focusProperties { canFocus = browser.editing }
-                        .testTag("address-field").onFocusChanged { f ->
+                        .testTag("address-field")
+                        .onPreviewKeyEvent { e ->
+                            // A keyboard's Enter: handle both press and release here, so the
+                            // release doesn't land on whatever gets focus next.
+                            if (e.key == Key.Enter || e.key == Key.NumPadEnter) {
+                                if (e.type == KeyEventType.KeyDown) submit(text.text)
+                                true
+                            } else false
+                        }
+                        .onFocusChanged { f ->
                             if (f.isFocused) hadFocus = true
                             else if (hadFocus) { hadFocus = false; browser.editing = false }
                         },
