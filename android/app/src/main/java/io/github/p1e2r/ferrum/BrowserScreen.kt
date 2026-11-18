@@ -230,7 +230,13 @@ private fun TopBar(activity: MainActivity, text: TextFieldValue, onText: (TextFi
     val colors = MaterialTheme.colorScheme
     var hadFocus by remember { mutableStateOf(false) }
     LaunchedEffect(browser.editing) {
-        if (browser.editing) runCatching { addressFocus.requestFocus() } else { focus.clearFocus(); keyboard?.hide() }
+        if (browser.editing) runCatching { addressFocus.requestFocus() } else {
+            focus.clearFocus()
+            keyboard?.hide()
+            // Focus goes to the page, not the next button: a keyboard's Enter is released
+            // after the address is submitted, and would otherwise press that button.
+            browser.active.webView?.requestFocus()
+        }
     }
 
     fun submit(value: String) {
@@ -242,8 +248,6 @@ private fun TopBar(activity: MainActivity, text: TextFieldValue, onText: (TextFi
         }
         browser.go(value)
         browser.editing = false
-        focus.clearFocus()
-        keyboard?.hide()
     }
 
     Row(
