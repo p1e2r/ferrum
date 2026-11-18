@@ -78,6 +78,8 @@ class Browser(val activity: MainActivity, val settings: Settings, val store: Sto
     var screen by mutableStateOf(Screen.Browser)
     var switcherOpen by mutableStateOf(false)
     var editing by mutableStateOf(false)
+    /** What's typed in the address bar while editing. */
+    var addressText by mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(""))
     var findOpen by mutableStateOf(false)
     var findQuery by mutableStateOf("")
     var findMatches by mutableIntStateOf(0)
@@ -111,6 +113,14 @@ class Browser(val activity: MainActivity, val settings: Settings, val store: Sto
     private fun newTabPage(): Tab =
         if (settings.newTabPage == NewTabPage.Home && settings.homePage.isNotBlank()) Tab(Location.toUrl(settings.homePage, settings.searchEngine)) else Tab()
 
+    /** Starts editing the address bar, with the page's address selected. */
+    fun startEditing() {
+        val full = if (active.isStart) "" else Location.display(active.url, settings.searchEngine)
+        addressText = androidx.compose.ui.text.input.TextFieldValue(full, androidx.compose.ui.text.TextRange(0, full.length))
+        switcherOpen = false
+        editing = true
+    }
+
     // --- Tabs -------------------------------------------------------------
 
     fun newTab(url: String? = null, background: Boolean = false, after: Int = tabs.size - 1): Tab {
@@ -124,6 +134,7 @@ class Browser(val activity: MainActivity, val settings: Settings, val store: Sto
 
     fun select(index: Int) {
         if (index !in tabs.indices) return
+        editing = false
         if (index != activeIndex) {
             captureThumbnail(active)
             active.webView?.onPause()

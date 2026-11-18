@@ -113,7 +113,7 @@ fun StartPage(activity: MainActivity) {
                     Row(
                         Modifier.widthIn(max = 560.dp).fillMaxWidth().height(52.dp).clip(CircleShape)
                             .background(colors.surface).border(1.dp, colors.outlineVariant, CircleShape)
-                            .clickable { runCatching { addressFocus.requestFocus() } }.padding(horizontal = 18.dp),
+                            .clickable { browser.startEditing() }.testTag("start-search").padding(horizontal = 18.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(Icons.Filled.Search, null, tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp))

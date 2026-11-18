@@ -91,6 +91,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -122,8 +123,8 @@ fun FerrumApp(activity: MainActivity) {
     BackHandler {
         when {
             browser.fullscreenView != null -> browser.exitFullscreen()
-            browser.editing -> { browser.editing = false; focus.clearFocus() }
             browser.switcherOpen -> browser.switcherOpen = false
+            browser.editing -> { browser.editing = false; focus.clearFocus() }
             browser.screen != Screen.Browser -> browser.screen = Screen.Browser
             browser.findOpen -> browser.stopFind()
             browser.back() -> {}
@@ -175,10 +176,8 @@ fun FerrumApp(activity: MainActivity) {
 private fun BrowserView(activity: MainActivity) {
     val browser = activity.browser
     val tab = browser.active
-    var text by remember { mutableStateOf(TextFieldValue("")) }
-
     Column(Modifier.fillMaxSize()) {
-        TopBar(activity, text, onText = { text = it })
+        TopBar(activity, browser.addressText, onText = { browser.addressText = it })
         Box(Modifier.fillMaxWidth().height(2.dp)) {
             if (tab.loading && !tab.isStart) {
                 LinearProgressIndicator(
@@ -193,7 +192,7 @@ private fun BrowserView(activity: MainActivity) {
         if (browser.findOpen) FindBar(browser)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (tab.isStart) StartPage(activity) else PageView(browser, tab)
-            if (browser.editing) Suggestions(activity, text.text, onFill = { text = TextFieldValue(it, TextRange(it.length)) }) { browser.editing = false }
+            if (browser.editing) Suggestions(activity, browser.addressText.text, onFill = { browser.addressText = TextFieldValue(it, TextRange(it.length)) }) { browser.editing = false }
         }
     }
 }
@@ -224,6 +223,10 @@ private fun TopBar(activity: MainActivity, text: TextFieldValue, onText: (TextFi
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val colors = MaterialTheme.colorScheme
+    var hadFocus by remember { mutableStateOf(false) }
+    LaunchedEffect(browser.editing) {
+        if (browser.editing) runCatching { addressFocus.requestFocus() } else { focus.clearFocus(); keyboard?.hide() }
+    }
 
     fun submit(value: String) {
         val answer = Calc.answer(value)
@@ -269,17 +272,18 @@ private fun TopBar(activity: MainActivity, text: TextFieldValue, onText: (TextFi
                     cursorBrush = SolidColor(colors.primary),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go, autoCorrectEnabled = false),
                     keyboardActions = KeyboardActions(onGo = { submit(text.text) }),
-                    modifier = Modifier.fillMaxWidth().focusRequester(addressFocus).testTag("address").onFocusChanged { f ->
-                        if (f.isFocused && !browser.editing) {
-                            val full = if (tab.isStart) "" else Location.display(tab.url, settings.searchEngine)
-                            onText(TextFieldValue(full, TextRange(0, full.length)))
-                            browser.editing = true
-                            browser.switcherOpen = false
-                        } else if (!f.isFocused && browser.editing) {
-                            browser.editing = false
-                        }
-                    },
+                    // Focusable only while editing: otherwise Android would hand it focus on its
+                    // own (with a keyboard, or after a page loads) and the bar would never let go.
+                    modifier = Modifier.fillMaxWidth().focusRequester(addressFocus).focusProperties { canFocus = browser.editing }
+                        .testTag("address-field").onFocusChanged { f ->
+                            if (f.isFocused) hadFocus = true
+                            else if (hadFocus) { hadFocus = false; browser.editing = false }
+                        },
                 )
+                if (!browser.editing) {
+                    // Tapping the address starts editing it.
+                    Box(Modifier.matchParentSize().clickable(interactionSource = null, indication = null) { browser.startEditing() }.testTag("address"))
+                }
                 if (!browser.editing && tab.isStart) {
                     Text("Search or type address", color = colors.onSurfaceVariant, fontSize = 16.sp, maxLines = 1)
                 }
@@ -331,7 +335,7 @@ private fun TabCount(browser: Browser) {
     val colors = MaterialTheme.colorScheme
     Box(
         Modifier.size(44.dp).clip(CircleShape).combinedClickable(
-            onClick = { browser.captureThumbnail(browser.active); browser.switcherOpen = true },
+            onClick = { browser.editing = false; browser.captureThumbnail(browser.active); browser.switcherOpen = true },
             onLongClick = { browser.newTab() },
             onClickLabel = "Show tabs",
         ).testTag("tabs"),

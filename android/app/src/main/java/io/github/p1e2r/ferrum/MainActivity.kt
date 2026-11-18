@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity() {
         intent.action = null // don't open it again when the activity is recreated
         browser.screen = Screen.Browser
         browser.switcherOpen = false
+        browser.editing = false
         val target = if (url.startsWith("http://") || url.startsWith("https://")) url else Location.toUrl(url, settings.searchEngine)
         if (browser.active.isStart && browser.active.webView == null) browser.load(target) else browser.newTab(target, after = browser.activeIndex)
     }
