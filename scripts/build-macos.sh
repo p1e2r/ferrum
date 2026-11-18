@@ -87,7 +87,14 @@ rm -f "$DMG"
 STAGE=$(mktemp -d)
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Ferrum" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+# hdiutil sometimes fails with "Resource busy" while the last image is still
+# being released; wait and try again.
+for attempt in 1 2 3 4 5; do
+  if hdiutil create -volname "Ferrum" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null; then break; fi
+  [ "$attempt" = 5 ] && { echo "hdiutil failed" >&2; exit 1; }
+  echo "hdiutil failed, retrying ($attempt)…" >&2
+  sleep $((attempt * 5))
+done
 rm -rf "$STAGE"
 
 echo "==> macOS ($LABEL): $DMG"
