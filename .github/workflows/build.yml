@@ -210,6 +210,20 @@ jobs:
           name: android-screenshots
           path: shots
 
+      # The latest run's screenshots are also kept on the ci-screenshots branch, to look at without unzipping.
+      - name: Keep the screenshots on the ci-screenshots branch
+        if: always() && github.event_name == 'push'
+        run: |
+          set -e
+          cd shots
+          git init -q -b ci-screenshots
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p "$GITHUB_REF_NAME" && mv *.png *.txt *.xml "$GITHUB_REF_NAME"/ 2>/dev/null || true
+          git add -A
+          git commit -qm "Screenshots from $GITHUB_SHA"
+          git push -fq "https://x-access-token:${{ github.token }}@github.com/$GITHUB_REPOSITORY" ci-screenshots
+
   # Every push to main is published as the next release (x.y.z), marked as
   # GitHub's "Latest" release (pushes to dev only build and test):
   #   push to main → the version in Cargo.toml; if that version is already

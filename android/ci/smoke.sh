@@ -12,20 +12,34 @@ mkdir -p "$OUT"
 
 shot() { sleep "${2:-2}"; adb exec-out screencap -p > "$OUT/$1.png"; echo "shot $1"; }
 
-# Taps the element with this test tag (resource-id) or text.
+# Taps the element with this test tag (resource-id), text or description,
+# trying a few times while the screen settles.
 tap() {
-  adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
-  adb shell cat /sdcard/ui.xml > "$OUT/ui.xml"
-  python3 - "$1" "$OUT/ui.xml" <<'PY' | { read -r x y && adb shell input tap "$x" "$y" && echo "tapped $1 at $x,$y" || echo "not found: $1"; }
+  for _ in 1 2 3 4; do
+    adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+    adb shell cat /sdcard/ui.xml > "$OUT/ui.xml"
+    xy=$(python3 - "$1" "$OUT/ui.xml" <<'PY'
 import re, sys, xml.etree.ElementTree as ET
 want, path = sys.argv[1], sys.argv[2]
-for n in ET.parse(path).iter("node"):
+try:
+    nodes = list(ET.parse(path).iter("node"))
+except ET.ParseError:
+    nodes = []
+for n in nodes:
     if want in (n.get("resource-id"), n.get("text"), n.get("content-desc")):
         a, b, c, d = map(int, re.findall(r"\d+", n.get("bounds")))
         print((a + c) // 2, (b + d) // 2)
         break
 PY
+)
+    if [ -n "$xy" ]; then adb shell input tap $xy; echo "tapped $1 at $xy"; return 0; fi
+    sleep 1.5
+  done
+  echo "not found: $1"
+  cp "$OUT/ui.xml" "$OUT/missing-$1.xml"
 }
+
+back() { adb shell input keyevent 4; sleep 1.5; }
 
 adb logcat -c
 adb install -r "$APK" || exit 1
@@ -45,20 +59,20 @@ shot 04-page 8
 
 tap menu
 shot 05-menu
-adb shell input keyevent 4
+back
 
 adb shell am start -a android.intent.action.VIEW -d "https://en.wikipedia.org/wiki/Iron" -n "$PKG/io.github.p1e2r.ferrum.MainActivity"
 shot 06-link-from-another-app 10
 
 tap tabs
 shot 07-tabs
-adb shell input keyevent 4
+back
 
 tap menu
 sleep 1
 tap Settings
 shot 08-settings
-adb shell input keyevent 4
+back
 
 adb shell cmd uimode night yes
 tap tabs
